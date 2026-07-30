@@ -1,10 +1,15 @@
 [project]
 name = "crypto-data"
 version = "0.1.0"
-description = "Historical OHLCV candle collector into a local Parquet store"
+description = "Historical OHLCV candle collector into a local Parquet store, and signal research over it"
 requires-python = ">=3.12"
+
+# numpy is listed even though pandas already installs it, because signals/
+# imports it directly. Depending on it implicitly through pandas works right up
+# until a pandas release stops needing it, and then breaks somewhere unrelated.
 dependencies = [
     "ccxt>=4.4",
+    "numpy>=1.26",
     "pandas>=2.2",
     "pyarrow>=16",
 ]
@@ -24,8 +29,12 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Two packages, one project. They are separate directories rather than separate
+# projects because signals/ reads the store through collector's own code, and
+# splitting them into two installables would mean versioning that boundary --
+# a lot of ceremony for two packages that always move together.
 [tool.hatch.build.targets.wheel]
-packages = ["src/collector"]
+packages = ["src/collector", "src/signals"]
 
 # pythonpath lets `pytest` import `collector` straight from src/ without
 # installing the package first. One less step between you and a green suite,
