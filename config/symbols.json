@@ -1,0 +1,13 @@
+{
+  "_comment": "Exchange is binance because the probe on 2026-07-30 showed Kraken's public OHLC endpoint ignores `since` and serves only its most recent ~30 days, making a 2-year backfill impossible there. Binance honoured a 730-day `since` and returns 500 candles per page (bybit 199, okx 100), so it needs the fewest requests. Note binance.com quotes in USDT rather than USD.",
+  "exchange": "binance",
+  "timeframe": "1h",
+  "start": "2024-08-01",
+  "symbols": [
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+    "ADA/USDT"
+  ]
+}

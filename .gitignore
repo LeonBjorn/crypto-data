@@ -1,0 +1,31 @@
+# The Parquet store and logs are generated artefacts, never committed.
+#
+# This is the rule worth defending. The store will grow to hundreds of megabytes
+# of binary data that changes on every run, and git handles that badly: it cannot
+# diff it, cannot compress successive versions of it, and once a large file is in
+# the history it is there permanently. The store is also entirely reproducible --
+# that is the whole point of this project -- so committing it stores no
+# information that the code does not already contain.
+data/
+logs/
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# macOS writes these into any folder it previews. Harmless, but they turn up in
+# every `git status` forever if not ignored.
+.DS_Store
+
+# Deliberately NOT ignored, in case a future search suggests otherwise:
+#
+# uv.lock          The exact versions every dependency resolved to. Committing it
+#                  is what makes `uv sync` reproduce this environment rather than
+#                  a similar one. Many .gitignore templates found online exclude
+#                  lockfiles; that advice is for libraries, not applications.
+# config/          Small, hand-edited, and carries the reasoning behind the
+#                  exchange choice. It is input, not output.
+# .vscode/         The debug and test settings that make the project work in the
+#                  editor. Committing them means a fresh checkout works without
+#                  reconstructing them from memory.

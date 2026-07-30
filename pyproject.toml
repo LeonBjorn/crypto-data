@@ -1,0 +1,30 @@
+[project]
+name = "crypto-data"
+version = "0.1.0"
+description = "Historical OHLCV candle collector into a local Parquet store"
+requires-python = ">=3.12"
+dependencies = [
+    "ccxt>=4.4",
+    "pandas>=2.2",
+    "pyarrow>=16",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/collector"]
+
+# pythonpath lets `pytest` import `collector` straight from src/ without
+# installing the package first. One less step between you and a green suite,
+# and no editable-install confusion to debug later.
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"

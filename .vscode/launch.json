@@ -1,0 +1,66 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Debug the whole test suite. Breakpoints in either the tests or the
+      // implementation will be hit.
+      "name": "Pytest: all tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-v"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      // Debug only the file you currently have open. Faster feedback when you
+      // are working on one module.
+      "name": "Pytest: current file",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": [
+        "-v",
+        "${file}"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      // The Kraken history probe. Makes real network calls, unlike the tests.
+      "name": "Probe: exchange history depth",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/probe_kraken_history.py",
+      "args": [
+        "--compare"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      // The collector CLI. Does not exist yet -- this is here so that F5 works
+      // the moment increment 8 lands. Edit the args to match what you want to
+      // fetch, or set them to ["--help"] to see the options.
+      "name": "Collector: backfill (dry run)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "collector.cli",
+      "args": [
+        "--config",
+        "config/symbols.json",
+        "--dry-run"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      },
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}

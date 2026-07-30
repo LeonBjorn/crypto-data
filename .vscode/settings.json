@@ -1,0 +1,39 @@
+{
+  // Use the project's own virtual environment, not whichever Python macOS
+  // happens to have on PATH. Without this, VS Code may import a `collector`
+  // from somewhere else entirely, or fail to find ccxt.
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  // Show tests in the Test Explorer panel (the flask icon in the sidebar) so
+  // you can run or debug a single test by clicking it.
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": [
+    "tests"
+  ],
+  // Tests import `collector` from src/ without the package being installed.
+  // pyproject.toml already tells pytest about this; this tells Pylance, so you
+  // get working autocomplete and no false "unresolved import" squiggles.
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/src"
+  ],
+  // Keep generated artefacts out of the file tree and out of search results.
+  // These are the same paths as .gitignore, for the same reason.
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true
+  },
+  "search.exclude": {
+    "data/**": true,
+    "logs/**": true,
+    ".venv/**": true
+  },
+  // Trim trailing whitespace and end files with a newline, so that diffs show
+  // real changes rather than invisible ones.
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "[python]": {
+    "editor.rulers": [
+      88
+    ]
+  }
+}
