@@ -9,6 +9,12 @@ dependencies = [
     "pyarrow>=16",
 ]
 
+# Installs a `collect` command, so the everyday case is `uv run collect` rather
+# than remembering a module path. `python -m collector.cli` still works and needs
+# no install, which is what the tests and a fresh checkout use.
+[project.scripts]
+collect = "collector.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=8",

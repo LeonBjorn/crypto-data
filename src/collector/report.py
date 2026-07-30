@@ -36,7 +36,12 @@ FILENAME = "gaps.json"
 # Bumped if the shape of the file changes. A reader written against this shape can
 # then refuse a later one loudly instead of quietly misreading it -- silently
 # reading the wrong field is the failure mode that costs a day.
-SCHEMA_VERSION = 1
+#
+# 2 added `errors` and `totals.symbols_failed`, when wiring up the CLI showed that
+# a symbol whose fetch raised had no representation here at all. It was not merely
+# absent from the file: a run that died on the first of five symbols would have
+# reported four symbols, nothing missing, complete: true.
+SCHEMA_VERSION = 2
 
 __all__ = [
     "FILENAME",
@@ -94,24 +99,36 @@ def _symbol_entry(result):
     }
 
 
-def build_report(results, *, exchange, timeframe, start_ms, end_ms, generated_at_ms):
+def build_report(
+    results, *, exchange, timeframe, start_ms, end_ms, generated_at_ms, errors=None
+):
     """
     Turn a run's Results into the dict that gets written to disk.
 
     Separated from writing so the decisions -- what counts as complete, what the
     totals are -- can be tested against plain data, with no filesystem involved.
 
-    `complete` is true only if there is at least one symbol and every one of them
-    is complete. The emptiness check is not defensive padding: `all([])` is True,
-    so the obvious implementation would declare a run that fetched nothing at all
-    to be a clean bill of health. A run that verified nothing has established
-    nothing.
+    `complete` is true only if there is at least one symbol, nothing failed, and
+    every symbol is complete. The emptiness check is not defensive padding:
+    `all([])` is True, so the obvious implementation would declare a run that
+    fetched nothing at all to be a clean bill of health. A run that verified
+    nothing has established nothing.
+
+    `errors` carries symbols whose fetch raised, as `{"symbol": ..., "error":
+    ...}`. They are deliberately not in `symbols`, because that list means "was
+    checked" and a symbol that blew up was not. But they must still drag
+    `complete` down to false: the CLI continues past a failed symbol so that one
+    bad symbol cannot deny you four good backfills, and without this the run
+    where the connection died on the first of five would report four symbols,
+    nothing missing, complete: true. Every clause of that is accurate and the
+    whole of it is a lie.
 
     Note that the report describes *this run*. If a run covered two of five
     symbols, only those two appear, and `complete` speaks only for them. The list
     of symbols is what tells a reader which ones were actually checked.
     """
     entries = [_symbol_entry(result) for result in results]
+    failures = list(errors or [])
 
     return {
         "schema": SCHEMA_VERSION,
@@ -123,9 +140,14 @@ def build_report(results, *, exchange, timeframe, start_ms, end_ms, generated_at
         "requested_end": to_utc_string(end_ms),
         "requested_start_ms": start_ms,
         "requested_end_ms": end_ms,
-        "complete": bool(entries) and all(entry["complete"] for entry in entries),
+        "complete": (
+            bool(entries)
+            and not failures
+            and all(entry["complete"] for entry in entries)
+        ),
         "totals": {
             "symbols": len(entries),
+            "symbols_failed": len(failures),
             "candles_added": sum(entry["candles_added"] for entry in entries),
             "pages_fetched": sum(entry["pages_fetched"] for entry in entries),
             "gaps_repaired": sum(entry["gaps_repaired"] for entry in entries),
@@ -140,6 +162,11 @@ def build_report(results, *, exchange, timeframe, start_ms, end_ms, generated_at
             "gaps_not_attempted": sum(len(entry["not_attempted"]) for entry in entries),
         },
         "symbols": entries,
+        # Listed last because it is usually empty, and a reader scanning the file
+        # by eye should not have to scroll past `"errors": []` to reach the data.
+        # Always present, though: an optional key is a key somebody forgets to
+        # check for.
+        "errors": failures,
     }
 
 
@@ -218,7 +245,17 @@ def summarise(built):
             f"{totals['gaps_not_attempted']} gap(s) not attempted"
         )
 
-    if not totals["candles_missing"] and not totals["candles_not_attempted"]:
+    if totals["symbols_failed"]:
+        parts.append(f"{totals['symbols_failed']} symbol(s) failed")
+
+    # "nothing missing" is a claim about the whole run, so it cannot be made while
+    # any part of the run is unaccounted for. A failed symbol was never checked at
+    # all, which is the least clean outcome there is, not a neutral one.
+    if (
+        not totals["candles_missing"]
+        and not totals["candles_not_attempted"]
+        and not totals["symbols_failed"]
+    ):
         parts.append("nothing missing")
 
     return ", ".join(parts) + "."

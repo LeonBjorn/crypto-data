@@ -106,7 +106,7 @@ class TestBuildReport:
         loudly instead of quietly misreading it."""
         built = report.build_report([clean_result()], **RUN)
 
-        assert built["schema"] == 1
+        assert built["schema"] == 2
 
     def test_missing_candles_are_listed_per_symbol(self):
         hole = gap(utc(2025, 3, 4, 7), 2)
@@ -223,6 +223,90 @@ class TestBuildReport:
         assert built["totals"]["symbols"] == 0
 
 
+class TestFailedSymbols:
+    """A symbol whose fetch raised is the largest possible understatement.
+
+    The CLI keeps going when one symbol fails, because a single bad symbol should
+    not deny you four good backfills. But that leaves a symbol with no Result at
+    all, and if the report simply omitted it, a run where the network died on the
+    first of five symbols would produce a file saying four symbols, nothing
+    missing, complete: true. Every word of that is accurate and the whole is a
+    lie, which is precisely the failure mode requirement 6 exists to prevent.
+    """
+
+    def test_a_failure_is_recorded_with_its_reason(self):
+        built = report.build_report(
+            [clean_result("BTC/USDT")],
+            errors=[{"symbol": "ETH/USDT", "error": "connection reset"}],
+            **RUN,
+        )
+
+        assert built["errors"] == [
+            {"symbol": "ETH/USDT", "error": "connection reset"}
+        ]
+        assert built["totals"]["symbols_failed"] == 1
+
+    def test_a_failure_makes_the_run_incomplete_even_when_every_result_is_clean(self):
+        """The one that matters. Every symbol that returned a Result returned a
+        clean one, so an implementation that only consults `symbols` reports
+        complete: true.
+        """
+        built = report.build_report(
+            [clean_result("BTC/USDT"), clean_result("SOL/USDT")],
+            errors=[{"symbol": "ETH/USDT", "error": "connection reset"}],
+            **RUN,
+        )
+
+        assert built["complete"] is False
+
+    def test_a_failed_symbol_is_not_counted_among_those_that_succeeded(self):
+        """`symbols` means "was checked", so a symbol that blew up cannot be in
+        it -- otherwise the count of what was verified is inflated by the count
+        of what was not.
+        """
+        built = report.build_report(
+            [clean_result("BTC/USDT")],
+            errors=[{"symbol": "ETH/USDT", "error": "connection reset"}],
+            **RUN,
+        )
+
+        assert built["totals"]["symbols"] == 1
+        assert [s["symbol"] for s in built["symbols"]] == ["BTC/USDT"]
+
+    def test_no_failures_still_records_an_empty_list(self):
+        """Present and empty rather than absent, so a reader can check
+        `report["errors"]` without first checking whether the key exists. An
+        optional key is a key somebody forgets to look for.
+        """
+        built = report.build_report([clean_result()], **RUN)
+
+        assert built["errors"] == []
+        assert built["totals"]["symbols_failed"] == 0
+
+    def test_a_run_where_everything_failed_is_not_complete(self):
+        built = report.build_report(
+            [], errors=[{"symbol": "BTC/USDT", "error": "connection reset"}], **RUN
+        )
+
+        assert built["complete"] is False
+        assert built["totals"]["symbols"] == 0
+        assert built["totals"]["symbols_failed"] == 1
+
+    def test_the_summary_names_the_failures(self):
+        line = report.summarise(
+            report.build_report(
+                [clean_result("BTC/USDT")],
+                errors=[{"symbol": "ETH/USDT", "error": "connection reset"}],
+                **RUN,
+            )
+        )
+
+        assert "1 symbol(s) failed" in line
+        # A failed symbol left everything it holds unverified, so the summary
+        # cannot pass the run off as clean.
+        assert "nothing missing" not in line
+
+
 class TestWriteReport:
     def test_writes_valid_json_that_reads_back_identically(self, log_dir):
         built = report.build_report([clean_result()], **RUN)
@@ -297,7 +381,7 @@ class TestWriteReport:
         path = report.write_report(log_dir, report.build_report([clean_result()], **RUN))
         text = path.read_text()
 
-        assert '\n  "schema": 1' in text
+        assert '\n  "schema": 2' in text
         assert text.count("\n") > 10
 
 
