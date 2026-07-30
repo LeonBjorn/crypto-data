@@ -155,7 +155,11 @@ def build_parser():
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="log every request at DEBUG level",
+        # Not "log every request", which is what this said until a check of the
+        # actual output caught it: logging_setup pins ccxt and urllib3 to WARNING
+        # precisely so their DEBUG chatter cannot bury our own records. What DEBUG
+        # actually adds is store.py's per-write detail.
+        help="log each write to the store at DEBUG level",
     )
 
     return parser

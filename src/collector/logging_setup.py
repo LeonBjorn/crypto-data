@@ -10,9 +10,14 @@ import sys
 import time
 from pathlib import Path
 
-# 5 MB per file, five files kept. At roughly one line per fetched page, a
-# two-year backfill of five symbols produces a few thousand lines, so this
-# holds many runs' worth of history before anything is discarded.
+# 5 MB per file, five files kept.
+#
+# Sizing note, corrected after actually reading a log: at the default INFO level
+# this is a handful of lines per symbol per run, not one line per fetched page --
+# pagination is summarised ("1200 candle(s) added from 3 page(s)") rather than
+# narrated. A daily run over five symbols is therefore on the order of a few
+# kilobytes, and 5 MB holds years of it. The generous size is really there for
+# --verbose runs and for long stretches of retry warnings.
 MAX_BYTES = 5 * 1024 * 1024
 BACKUP_COUNT = 5
 
