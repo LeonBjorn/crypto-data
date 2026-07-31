@@ -370,6 +370,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "ccxt" },
+    { name = "numpy" },
     { name = "pandas" },
     { name = "pyarrow" },
 ]
@@ -382,6 +383,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "ccxt", specifier = ">=4.4" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "pyarrow", specifier = ">=16" },
 ]
