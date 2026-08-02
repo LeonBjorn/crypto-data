@@ -32,6 +32,17 @@ be worthless cannot be rescued by a lucky stop, and a rule that works cannot be
 credited to one. Turn them on afterwards and the difference between the two runs
 is what the exit logic was worth.
 
+A trailing stop is the third exit, and off by default for the same reason. It
+begins as a plain stop `trail` below the entry and then ratchets up to sit
+`trail` below the highest high seen since entry, never loosening. Where a fixed
+stop asks "has this fallen too far from where I bought it", the trailing one
+asks "has this given back too much of what it was ahead" -- which is the exit a
+breakout wants, since the whole thesis of a breakout is that a move already
+under way tends to run until it visibly stops rather than for a fixed number of
+hours. It obeys the same two rules as the fixed stop below: a bar that gaps
+through the level fills at its open, and the peak it trails is the one locked in
+by earlier bars, not one set by the same candle whose low is being tested.
+
 Two decisions inside that scan are worth stating out loud, because both are
 places where a reasonable-looking choice quietly improves the results:
 
@@ -180,6 +191,7 @@ class Book:
     costs: Costs
     stop: Optional[float] = None
     target: Optional[float] = None
+    trail: Optional[float] = None
 
     def _exits(self) -> str:
         if not len(self.trades):
@@ -302,7 +314,35 @@ def _exit_of(entry_bar, final_bar, entry_price, opens, highs, lows, stop, target
     return bar, max(opens[bar], target_level), "target"
 
 
-def round_trips(candles, signals, *, hold, stop=None, target=None, costs=DEFAULT_COSTS):
+def _trailing_exit(entry_bar, final_bar, entry_price, opens, highs, lows, trail):
+    """The first bar a trailing stop is hit, as `(bar, price)`, or None.
+
+    The stop rides `trail` below the highest high seen so far and never loosens.
+    It starts at `entry_price * (1 - trail)` -- a plain stop -- and ratchets up
+    as new highs are made, so what it protects is the peak of the trade rather
+    than the entry.
+
+    The peak used at each bar is the one set by *earlier* bars, not by the bar
+    whose low is being tested. A single candle records a high and a low with no
+    order between them, so the honest reading is the one that does not let this
+    bar's own high lift the stop out of the way of this bar's own low first --
+    the same pessimism the fixed stop uses when a bar touches two levels.
+
+    A bar that gaps below the level fills at its open, not the level: a market
+    that opened straight through the stop never offered the stop price, and
+    inventing it would flatter exactly the worst exits. This mirrors _exit_of.
+    """
+    peak = entry_price
+    for bar in range(entry_bar, final_bar):
+        level = peak * (1 - trail)
+        if lows[bar] <= level:
+            return bar, min(opens[bar], level)
+        if highs[bar] > peak:
+            peak = highs[bar]
+    return None
+
+
+def round_trips(candles, signals, *, hold, stop=None, target=None, trail=None, costs=DEFAULT_COSTS):
     """Score every signal as a round trip. Returns a Book.
 
     `hold` is in bars. `stop` and `target` are fractions of the entry price --
@@ -311,6 +351,7 @@ def round_trips(candles, signals, *, hold, stop=None, target=None, costs=DEFAULT
     hold = _whole_number(hold, "hold")
     stop = _fraction(stop, "stop", upper=1.0)
     target = _fraction(target, "target", upper=None)
+    trail = _fraction(trail, "trail", upper=1.0)
     costs = _checked_costs(costs)
     candles = _checked_candles(candles)
     signals = _checked_signals(signals, candles)
@@ -347,6 +388,21 @@ def round_trips(candles, signals, *, hold, stop=None, target=None, costs=DEFAULT
             entry_bar, final_bar, entry_price, opens, highs, lows, stop, target
         )
 
+        # The trailing stop is layered on top rather than folded into _exit_of,
+        # so the fixed stop/target logic that the tests pin down stays untouched.
+        # It wins only if it would have fired first -- an earlier bar, or the
+        # same bar at a worse price, keeping the tie-break pessimistic.
+        if trail is not None:
+            trailed = _trailing_exit(
+                entry_bar, final_bar, entry_price, opens, highs, lows, trail
+            )
+            if trailed is not None:
+                trail_bar, trail_price = trailed
+                if trail_bar < exit_bar or (
+                    trail_bar == exit_bar and trail_price < exit_price
+                ):
+                    exit_bar, exit_price, reason = trail_bar, trail_price, "trail"
+
         paid = entry_price * (1 + costs.per_side)
         received = exit_price * (1 - costs.per_side)
         rows.append(
@@ -373,6 +429,7 @@ def round_trips(candles, signals, *, hold, stop=None, target=None, costs=DEFAULT
         costs=costs,
         stop=stop,
         target=target,
+        trail=trail,
     )
 
 

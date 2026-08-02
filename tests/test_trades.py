@@ -423,6 +423,152 @@ class TestWhenBothAreTouchedInTheSameBar:
         assert row.exit_bar == 2
 
 
+class TestTheTrailingStop:
+    """A stop that starts at the entry and ratchets up under the running peak.
+
+    Same paper-checkable frames as the fixed stop: entry on bar 1 at an open of
+    100, and every level a round number. The extra thing being tested is only
+    the ratchet -- that the level follows the highest high and never falls back.
+    """
+
+    def test_with_no_new_high_it_is_just_a_stop_at_the_entry(self):
+        """Nothing rises, so the peak stays at the entry and a 2% trail sits at
+        98 -- the same place a 2% fixed stop would. A low of 97 takes it.
+        """
+        candles = stopping((99, 99, 97, 99))
+        row = one_trade(candles, signal_at(candles, 0), hold=4, trail=0.02, costs=trades.FREE)
+        assert row.exit_reason == "trail"
+        assert row.exit_bar == 2
+        assert row.exit_price == pytest.approx(98.0)
+
+    def test_it_ratchets_up_under_a_new_high_and_locks_in_a_gain(self):
+        """Bar 2 makes a high of 110, so the 2% trail rises to 107.8. Bar 3
+        drops to 105, through that level, and the trade leaves at 106 for a gain
+        -- the whole point of a trailing stop over a fixed one.
+        """
+        candles = frame(
+            [(50, 50, 50, 50), (100, 100, 100, 100), (105, 110, 104, 108), (106, 106, 105, 106)]
+            + flat(106, 5)
+        )
+        row = one_trade(candles, signal_at(candles, 0), hold=5, trail=0.02, costs=trades.FREE)
+        assert row.exit_reason == "trail"
+        assert row.exit_bar == 3
+        assert row.exit_price == pytest.approx(106.0)
+        assert row.gross_return == pytest.approx(0.06)
+
+    def test_a_bar_that_gaps_through_the_trailing_level_fills_at_the_open(self):
+        """The same honesty the fixed stop keeps. The peak is 110 and the level
+        107.8, but bar 3 opens at 105, already below it -- nobody was at 107.8,
+        so the fill is the open.
+        """
+        candles = frame(
+            [(50, 50, 50, 50), (100, 100, 100, 100), (105, 110, 104, 108), (105, 105, 104, 105)]
+            + flat(105, 5)
+        )
+        row = one_trade(candles, signal_at(candles, 0), hold=5, trail=0.02, costs=trades.FREE)
+        assert row.exit_reason == "trail"
+        assert row.exit_price == pytest.approx(105.0)
+
+    def test_the_peak_does_not_include_the_bar_being_tested(self):
+        """The pessimistic reading of one candle. Bar 2 has a high of 110 and a
+        low of 98. If its own high lifted the level to 107.8 before its low was
+        checked, the low would trip it inside the same bar. The peak it trails is
+        the one locked in before this bar -- still 100, level 98 -- so a low of
+        98 exactly is what takes it, and it fills at 98, not at 107.8.
+        """
+        candles = frame(
+            [(50, 50, 50, 50), (100, 100, 100, 100), (104, 110, 98, 104)] + flat(104, 5)
+        )
+        row = one_trade(candles, signal_at(candles, 0), hold=4, trail=0.02, costs=trades.FREE)
+        assert row.exit_reason == "trail"
+        assert row.exit_bar == 2
+        assert row.exit_price == pytest.approx(98.0)
+
+    def test_a_trail_that_is_never_breached_leaves_at_time(self):
+        """Price rises to 110 and holds there. The level trails at 107.8 and is
+        never reached, so the trade runs to its time exit like any other.
+        """
+        candles = frame(
+            [(50, 50, 50, 50), (100, 100, 100, 100), (110, 110, 110, 110)] + flat(110, 4)
+        )
+        row = one_trade(candles, signal_at(candles, 0), hold=3, trail=0.02, costs=trades.FREE)
+        assert row.exit_reason == "hold"
+        assert row.exit_bar == 4
+
+    def test_the_entry_bar_itself_can_trail_out(self):
+        candles = frame([(50, 50, 50, 50), (100, 100, 96, 100)] + flat(100, 5))
+        row = one_trade(candles, signal_at(candles, 0), hold=4, trail=0.02, costs=trades.FREE)
+        assert row.exit_reason == "trail"
+        assert row.exit_bar == 1
+        assert row.bars_held == 0
+
+    def test_a_tighter_trail_pre_empts_a_looser_fixed_stop(self):
+        """Both are set. The fixed stop at 10% sits at 90 and is never touched;
+        the 2% trail at 98 is, so the trade leaves on the trail rather than
+        running to time.
+        """
+        candles = stopping((99, 99, 97, 99))
+        row = one_trade(
+            candles, signal_at(candles, 0), hold=4, stop=0.10, trail=0.02, costs=trades.FREE
+        )
+        assert row.exit_reason == "trail"
+        assert row.exit_bar == 2
+
+    def test_a_fixed_stop_hit_first_still_wins(self):
+        """The other direction. A 2% fixed stop at 98 is hit on bar 2, while the
+        5% trail at 95 is not, so the exit is the stop -- the trailing layer
+        never overrides an exit that already happened at least as early.
+        """
+        candles = stopping((99, 99, 97, 99))
+        row = one_trade(
+            candles, signal_at(candles, 0), hold=4, stop=0.02, trail=0.05, costs=trades.FREE
+        )
+        assert row.exit_reason == "stop"
+        assert row.exit_bar == 2
+
+    def test_a_trail_pre_empts_a_later_target(self):
+        """The other exit family. The peak reaches 110 and the 2% trail at 107.8
+        is hit on bar 3, while a 20% target at 120 is never printed. The earlier
+        trailing exit is the one taken, over both the target and the time hold.
+        """
+        candles = frame(
+            [(50, 50, 50, 50), (100, 100, 100, 100), (105, 110, 104, 108), (106, 106, 105, 106)]
+            + flat(106, 5)
+        )
+        row = one_trade(
+            candles, signal_at(candles, 0), hold=5, target=0.20, trail=0.02, costs=trades.FREE
+        )
+        assert row.exit_reason == "trail"
+        assert row.exit_bar == 3
+
+    def test_it_cannot_see_past_the_exit(self):
+        """Rewriting the bars after a trailing exit must not change the trade,
+        the same causality the fixed fill model keeps.
+        """
+        candles = frame(
+            [(50, 50, 50, 50), (100, 100, 100, 100), (105, 110, 104, 108), (106, 106, 105, 106)]
+            + flat(106, 5)
+        )
+        signals = signal_at(candles, 0)
+        before = trades.round_trips(candles, signals, hold=5, trail=0.02, costs=trades.FREE)
+
+        meddled = candles.copy()
+        meddled.loc[meddled.index[5:], ["open", "high", "low", "close"]] = 1_000.0
+        after = trades.round_trips(meddled, signals, hold=5, trail=0.02, costs=trades.FREE)
+
+        pd.testing.assert_frame_equal(before.trades, after.trades)
+
+    def test_it_is_paid_for_like_any_other_exit(self):
+        candles = stopping((99, 99, 97, 99))
+        row = one_trade(candles, signal_at(candles, 0), hold=4, trail=0.02)
+        assert row.net_return < row.gross_return
+
+    @pytest.mark.parametrize("trail", [0, 1, 1.5, -0.1, "x", True])
+    def test_a_trail_that_is_not_a_fraction_between_zero_and_one_is_refused(self, trail):
+        with pytest.raises(trades.TradeError, match="trail"):
+            trades.round_trips(RISER, signal_at(RISER, 0), hold=3, trail=trail)
+
+
 class TestOverlappingTradesAreAllKept:
     def test_consecutive_signals_each_get_a_trade(self):
         candles = frame(flat(100, 20))
