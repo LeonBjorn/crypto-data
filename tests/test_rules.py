@@ -35,17 +35,18 @@ HOUR = 3_600_000
 T0 = 1_722_470_400_000  # 2024-08-01T00:00:00Z
 
 
-def candles(closes, highs=None, lows=None):
+def candles(closes, highs=None, lows=None, volumes=None):
     """A candle frame shaped like the store's, built around the closes given.
 
-    Only `close` and `high` are read by any rule today, but the frame carries
-    the full set of columns because that is what `prices.load` returns, and a
-    rule that quietly depends on a narrower frame would pass here and fail on
-    real data.
+    `volume` defaults to a flat 10.0 on every bar, which is deliberately inert:
+    the volume-reading rule cannot fire on a constant series, so the price rules
+    can be tested without a volume column that means anything. The tests that
+    care about volume pass their own with `volumes=`.
     """
     closes = list(closes)
     highs = list(highs) if highs is not None else [c + 1.0 for c in closes]
     lows = list(lows) if lows is not None else [c - 1.0 for c in closes]
+    vols = list(volumes) if volumes is not None else [10.0] * len(closes)
     return pd.DataFrame(
         {
             "timestamp": [T0 + i * HOUR for i in range(len(closes))],
@@ -53,7 +54,7 @@ def candles(closes, highs=None, lows=None):
             "high": [float(h) for h in highs],
             "low": [float(low) for low in lows],
             "close": [float(c) for c in closes],
-            "volume": [10.0] * len(closes),
+            "volume": [float(v) for v in vols],
         }
     )
 
@@ -64,10 +65,22 @@ def fired_at(result):
 
 
 def random_walk(count, seed=0, start=100.0):
-    """A price path with no structure, for the property tests."""
+    """A price path with no structure, for the property tests.
+
+    Volume tracks the size of each up-move so that the volume-confirmed breakout
+    fires here rather than sitting silent on a flat series -- which is what lets
+    the shared causality and shape checks actually exercise it. The price rules
+    ignore volume, so their behaviour on these fixtures is unchanged.
+    """
     rng = np.random.default_rng(seed)
     closes = start + rng.standard_normal(count).cumsum()
-    return candles(closes, highs=closes + abs(rng.standard_normal(count)))
+    highs = closes + abs(rng.standard_normal(count))
+    # Volume is spiky and independent of the price move, so only some breakouts
+    # land on a heavy bar. That keeps the volume-confirmed rule a strict subset
+    # of plain breakout rather than a copy of it, which is what the rules-differ
+    # test needs to see. The price rules ignore this column entirely.
+    volumes = 10.0 + 300.0 * (rng.random(count) < 0.5)
+    return candles(closes, highs=highs, volumes=volumes)
 
 
 # Every rule, as (name, kwargs). The shared property tests iterate this, so a
@@ -76,6 +89,12 @@ ALL_RULES = [
     pytest.param("ma-cross", {"fast": 2, "slow": 3}, id="ma-cross"),
     pytest.param("rsi-oversold", {"period": 2, "level": 50}, id="rsi-oversold"),
     pytest.param("breakout", {"window": 3}, id="breakout"),
+    pytest.param("breakout-volume", {"window": 3, "volume_mult": 1.5}, id="breakout-volume"),
+    pytest.param(
+        "breakout-volume-trend",
+        {"window": 3, "volume_mult": 1.5, "trend": 4},
+        id="breakout-volume-trend",
+    ),
 ]
 
 
@@ -327,6 +346,144 @@ class TestBreakout:
         )
 
 
+class TestBreakoutVolume:
+    """The same breakout, gated by volume above a multiple of its own average.
+
+    Every fixture below is the breakout fixture with a volume column bolted on,
+    so what is being tested is only the extra condition: the price side is
+    already pinned down by TestBreakout.
+    """
+
+    CLOSES = [10, 10, 10, 10, 20]
+    HIGHS = [11, 11, 11, 11, 21]
+
+    def frame(self, volumes):
+        return candles(self.CLOSES, highs=self.HIGHS, volumes=volumes)
+
+    def test_it_fires_when_the_breakout_bar_has_heavy_volume(self):
+        """The prior-three volume average at bar 4 is 10, so a bar trading 100
+        clears 1.5x it easily, and the breakout is confirmed.
+        """
+        prices = self.frame([10, 10, 10, 10, 100])
+        assert fired_at(rules.apply("breakout-volume", prices, window=3)) == [4]
+
+    def test_a_breakout_on_thin_volume_is_suppressed(self):
+        """The whole point of the rule. Plain breakout fires here; the volume
+        gate is what removes it, so the two rules must disagree on this bar.
+        """
+        prices = self.frame([10, 10, 10, 10, 10])
+        assert fired_at(rules.apply("breakout", prices, window=3)) == [4]
+        assert fired_at(rules.apply("breakout-volume", prices, window=3)) == []
+
+    def test_volume_merely_equal_to_the_threshold_is_not_enough(self):
+        """The threshold is 1.5 x 10 = 15, and the gate is strict. A bar trading
+        exactly 15 has not exceeded average by half, it has reached the line.
+        """
+        prices = self.frame([10, 10, 10, 10, 15])
+        assert fired_at(rules.apply("breakout-volume", prices, window=3)) == []
+
+    def test_the_average_is_taken_from_the_bars_before_the_breakout(self):
+        """A bar trading 16 clears 1.5x the prior average of 10. It would not
+        clear 1.5x an average that counted itself -- mean(10, 10, 16) is 12 and
+        1.5x that is 18 -- so this fixture fires only if the breaking bar is kept
+        out of its own baseline, which is what the .shift(1) does.
+        """
+        prices = self.frame([10, 10, 10, 10, 16])
+        assert ind.sma(prices["volume"], 3).shift(1).iloc[4] == 10.0
+        assert fired_at(rules.apply("breakout-volume", prices, window=3)) == [4]
+
+    def test_heavy_volume_without_a_breakout_is_not_a_signal(self):
+        """Volume confirms a breakout; it does not manufacture one. A flat price
+        that never clears its prior high must stay silent however much trades.
+        """
+        prices = candles([10, 10, 10, 10, 10], highs=[11, 11, 11, 11, 11],
+                         volumes=[10, 10, 10, 10, 100])
+        assert fired_at(rules.apply("breakout-volume", prices, window=3)) == []
+
+    def test_it_fires_and_stays_causal_on_a_real_looking_series(self):
+        """The shared causality tests run this rule on flat volume, where it
+        never fires, so truncation proves nothing. Here volume tracks the size
+        of each up-move, so the rule actually triggers -- and only then does
+        checking that the past ignores the future have any teeth.
+        """
+        rng = np.random.default_rng(3)
+        count = 80
+        closes = 100 + rng.standard_normal(count).cumsum()
+        highs = closes + abs(rng.standard_normal(count))
+        moves = np.diff(closes, prepend=closes[0])
+        volumes = 10.0 + 500.0 * np.clip(moves, 0.0, None)
+        prices = candles(closes, highs=highs, volumes=volumes)
+
+        full = rules.apply("breakout-volume", prices, window=5)
+        assert full.any()
+        for cut in (20, 40, 60):
+            short = rules.apply("breakout-volume", prices.iloc[:cut].copy(), window=5)
+            assert_series_equal(full.iloc[:cut], short)
+
+    def test_a_volume_multiple_that_is_not_a_positive_number_is_refused(self):
+        prices = self.frame([10, 10, 10, 10, 100])
+        for bad in (0, -1, -0.5):
+            with pytest.raises(rules.RuleError, match="greater than zero"):
+                rules.apply("breakout-volume", prices, window=3, volume_mult=bad)
+        for bad in ("1.5", None, True):
+            with pytest.raises(rules.RuleError, match="must be a number"):
+                rules.apply("breakout-volume", prices, window=3, volume_mult=bad)
+
+
+class TestBreakoutVolumeTrend:
+    """A volume-confirmed breakout, taken only while the close is in an uptrend.
+
+    The filter is `close > sma(close, trend)`. The fixtures below break out on
+    volume identically; what differs is whether the closes average out below the
+    breaking bar (an uptrend, allowed) or above it (a downtrend, blocked).
+    """
+
+    # Breakout on a two-bar window at bar 5: the prior-two high is 7 and the
+    # close of 8 clears it, on volume 100 against a prior average of 10. Whether
+    # the trend filter lets it through is decided entirely by the early closes.
+    HIGHS = [9, 9, 6, 6, 7, 9]
+    VOLUMES = [10, 10, 10, 10, 10, 100]
+
+    def frame(self, closes):
+        return candles(closes, highs=self.HIGHS, volumes=self.VOLUMES)
+
+    def test_the_underlying_breakout_fires_regardless_of_trend(self):
+        """Both fixtures below share this breakout; the trend filter is the only
+        thing that ever changes the answer.
+        """
+        for closes in ([8, 8, 5, 5, 6, 8], [50, 50, 5, 5, 6, 8]):
+            got = fired_at(rules.apply("breakout-volume", self.frame(closes), window=2))
+            assert got == [5]
+
+    def test_a_breakout_in_an_uptrend_is_taken(self):
+        """mean(8, 5, 5, 6, 8) = 6.4, and the close of 8 is above it, so the
+        market counts as trending up and the breakout stands.
+        """
+        prices = self.frame([8, 8, 5, 5, 6, 8])
+        assert ind.sma(prices["close"], 5).iloc[5] == pytest.approx(6.4)
+        assert fired_at(rules.apply("breakout-volume-trend", prices, window=2, trend=5)) == [5]
+
+    def test_the_same_breakout_in_a_downtrend_is_skipped(self):
+        """The identical breakout, but the two early closes of 50 lift the
+        five-bar average to 14.8, above the breaking close of 8. Price is below
+        its trend, so the breakout is bought into a falling market and refused.
+        """
+        prices = self.frame([50, 50, 5, 5, 6, 8])
+        assert ind.sma(prices["close"], 5).iloc[5] == pytest.approx(14.8)
+        assert fired_at(rules.apply("breakout-volume", prices, window=2)) == [5]
+        assert fired_at(rules.apply("breakout-volume-trend", prices, window=2, trend=5)) == []
+
+    def test_it_is_a_subset_of_the_unfiltered_volume_breakout(self):
+        """The filter can only ever remove signals, never add one. On any series,
+        every trend-filtered breakout is also a plain volume breakout.
+        """
+        prices = random_walk(400, seed=21)
+        filtered = rules.apply("breakout-volume-trend", prices, window=5, trend=20)
+        unfiltered = rules.apply("breakout-volume", prices, window=5)
+        assert filtered.any()
+        assert set(fired_at(filtered)).issubset(fired_at(unfiltered))
+
+
 class TestTheEdge:
     """The turns-on behaviour, stated directly rather than through one rule."""
 
@@ -360,8 +517,8 @@ class TestTheEdgeHelper:
     Normally a private helper would be left to be tested through the callers,
     and I would rather not name an underscore function in a test. This one earns
     the exception: it is the single place the project's most important
-    invariant is written down, every rule delegates to it, and the three rules
-    that exist today all warm up in a leading block -- so the cases where
+    invariant is written down, every rule delegates to it, and the rules that
+    exist today all warm up in a leading block -- so the cases where
     "unknown" appears anywhere else are unreachable through them, and stayed
     untested until the mutation harness pointed at the lines.
 
@@ -482,7 +639,13 @@ class TestTheRegistry:
     """Looking a rule up by the name the command line will use."""
 
     def test_every_rule_is_registered_under_a_command_line_name(self):
-        assert set(rules.names()) == {"ma-cross", "rsi-oversold", "breakout"}
+        assert set(rules.names()) == {
+            "ma-cross",
+            "rsi-oversold",
+            "breakout",
+            "breakout-volume",
+            "breakout-volume-trend",
+        }
 
     def test_the_names_are_sorted_so_help_text_is_stable(self):
         assert rules.names() == sorted(rules.names())
@@ -495,6 +658,14 @@ class TestTheRegistry:
         assert rules.get("ma-cross").defaults == {"fast": 20, "slow": 50}
         assert rules.get("rsi-oversold").defaults == {"period": 14, "level": 30}
         assert rules.get("breakout").defaults == {"window": 20}
+        # 1.5 is a screening convention rather than a universal constant, but it
+        # is still pinned: a change to it silently reprices every earlier result.
+        assert rules.get("breakout-volume").defaults == {"window": 20, "volume_mult": 1.5}
+        assert rules.get("breakout-volume-trend").defaults == {
+            "window": 20,
+            "volume_mult": 1.5,
+            "trend": 200,
+        }
 
     def test_the_defaults_are_what_apply_uses_when_nothing_is_passed(self):
         prices = random_walk(300, seed=2)
@@ -545,9 +716,9 @@ class TestTheRegistry:
             assert description and not description.endswith(".")
             assert "\n" not in description
 
-    def test_the_three_rules_actually_differ(self):
+    def test_the_rules_actually_differ(self):
         """A registry is two names and one function away from a silent bug: the
-        CLI would offer three rules, run one, and print three sets of results
+        CLI would offer several rules, run one, and print several sets of results
         that agree suspiciously well.
         """
         prices = random_walk(400, seed=12)
@@ -628,7 +799,10 @@ class TestCandleValidation:
         message names the indicator that objected, which is enough to find it.
         """
         for parameter in kwargs:
-            if parameter == "level":
+            # level and volume_mult are the two fractional dials in the project;
+            # 2.5 is a perfectly good value for either, so they are validated by
+            # their own rules' tests rather than by this whole-number check.
+            if parameter in ("level", "volume_mult"):
                 continue
             broken = dict(kwargs, **{parameter: bad})
             with pytest.raises(ValueError):

@@ -59,6 +59,8 @@ __all__ = [
     "RuleError",
     "apply",
     "breakout",
+    "breakout_volume",
+    "breakout_volume_trend",
     "get",
     "ma_cross",
     "names",
@@ -72,6 +74,7 @@ __all__ = [
 # one copy plus a chance to disagree.
 CLOSE_ONLY = ("close",)
 HIGH_AND_CLOSE = ("high", "close")
+HIGH_CLOSE_AND_VOLUME = ("high", "close", "volume")
 
 
 class RuleError(ValueError):
@@ -191,12 +194,16 @@ def rsi_oversold(candles, *, period=ind.DEFAULT_RSI_PERIOD, level=30):
     )
 
 
-def breakout(candles, *, window=20):
-    """Buy when the close clears the highest high of the previous `window` bars.
+def _breakout_signal(candles, window):
+    """The raw breakout condition, as `(truth, defined)` before edge detection.
 
-    The `.shift(1)` below is the entire rule. Without it the window includes the
-    bar being tested, and the bar that breaks out is by definition the highest
-    bar in the neighbourhood, so the level rises to meet the price and the rule
+    Factored out because two rules compute it now -- plain breakout and its
+    volume-confirmed sibling -- and a second copy of the line below is a second
+    place for the window to be got subtly wrong.
+
+    The `.shift(1)` is the entire rule. Without it the window includes the bar
+    being tested, and the bar that breaks out is by definition the highest bar
+    in the neighbourhood, so the level rises to meet the price and the rule
     never fires -- silently, forever, while looking perfectly sensible.
 
     Highs set the level and the close breaks it, which is the conservative
@@ -204,12 +211,109 @@ def breakout(candles, *, window=20):
     at an unknown moment inside the hour; a close is something that had actually
     happened by the time the bar ended, which is when a decision could be made.
     """
-    _frame(candles, HIGH_AND_CLOSE, "breakout")
     prior_high = ind.rolling_high(candles["high"], window).shift(1)
-    close = candles["close"]
-    return _turns_true(
-        _condition(close > prior_high, prior_high.notna()), "breakout"
-    )
+    return candles["close"] > prior_high, prior_high.notna()
+
+
+def breakout(candles, *, window=20):
+    """Buy when the close clears the highest high of the previous `window` bars.
+
+    The oldest momentum rule there is: a new high is taken as a reason to expect
+    more. Its weakness is the mirror of ma-cross's -- it is early rather than
+    late, and it buys the false break that fails at once as readily as the real
+    one that runs. Whether the runs pay for the failures is what the evaluation
+    is for.
+    """
+    _frame(candles, HIGH_AND_CLOSE, "breakout")
+    truth, defined = _breakout_signal(candles, window)
+    return _turns_true(_condition(truth, defined), "breakout")
+
+
+def _check_volume_mult(volume_mult, where):
+    """Validate a volume multiple, shared by every rule that reads one."""
+    if isinstance(volume_mult, bool) or not isinstance(volume_mult, numbers.Real):
+        raise RuleError(
+            f"{where}: volume_mult must be a number, got {volume_mult!r} "
+            f"({type(volume_mult).__name__})"
+        )
+    if volume_mult <= 0:
+        raise RuleError(
+            f"{where}: volume_mult must be greater than zero, got {volume_mult}. "
+            f"A multiple of 1 is average volume; below it the filter lets "
+            f"everything through, which is plain breakout written the long way."
+        )
+
+
+def _breakout_volume_signal(candles, window, volume_mult):
+    """`(truth, defined)` for a volume-confirmed breakout, before edge detection.
+
+    Factored out so the plain volume rule and its trend-filtered sibling compute
+    the confirmation identically. The volume average is of prior bars only --
+    `sma(...).shift(1)`, the same shift the price side uses -- so the breaking
+    bar is never part of the baseline it has to clear. Left in, a genuinely
+    heavy bar would inflate its own average and could veto itself. Its volume is
+    known the moment the bar closes, which is the same moment its close is, so
+    this looks forward no further than the breakout already does.
+    """
+    price_truth, price_defined = _breakout_signal(candles, window)
+    average_volume = ind.sma(candles["volume"], window).shift(1)
+    volume_truth = candles["volume"] > volume_mult * average_volume
+    return price_truth & volume_truth, price_defined & average_volume.notna()
+
+
+def breakout_volume(candles, *, window=20, volume_mult=1.5):
+    """Buy on a breakout, but only when this bar's volume confirms it.
+
+    The same breakout as above, and-ed with a second condition: the breaking bar
+    must have traded at least `volume_mult` times the average volume of the
+    `window` bars before it. The idea is old and conventional -- a breakout on
+    thin volume is the market drifting through a level nobody was defending, and
+    is the kind that fails; a breakout the crowd actually turned up for is the
+    kind that is supposed to hold. Whether that distinction survives the fees is
+    exactly what putting this rule *beside* plain breakout is meant to reveal.
+
+    Unlike `window`, `volume_mult` is not a constant someone settled on decades
+    ago: 1.5 is a common screening value and no more. It is a dial, and the
+    honest way to use it is to leave it where it is rather than turn it until the
+    number improves.
+    """
+    _frame(candles, HIGH_CLOSE_AND_VOLUME, "breakout-volume")
+    _check_volume_mult(volume_mult, "breakout-volume")
+
+    truth, defined = _breakout_volume_signal(candles, window, volume_mult)
+    return _turns_true(_condition(truth, defined), "breakout-volume")
+
+
+def breakout_volume_trend(candles, *, window=20, volume_mult=1.5, trend=200):
+    """A volume-confirmed breakout, taken only while the market is trending up.
+
+    The same rule as breakout_volume, gated by a regime filter: the close must
+    also sit above its own `trend`-bar simple average. The reasoning comes
+    straight from the data this project produced -- breakout timing beats random
+    entry in every window measured, but the absolute return still turns negative
+    in a period when the market falls, because a long-only momentum rule can only
+    make money when things go up. A trend filter is the conventional answer:
+    stand aside during the down-legs rather than buying breakouts into them.
+
+    `close > sma(close, trend)` is the textbook version and is causal as written.
+    The average includes the current close, but the current close is known when
+    the bar shuts, so this is exactly the check a trader makes on the chart in
+    the moment -- "are we above the long average right now" -- and needs no shift.
+
+    The 200-bar default is the trend average every charting package draws by
+    default. On this project's hourly candles that is roughly eight days, which
+    is a medium-term filter rather than a truly long one; it is kept because it
+    is the conventional number, not because eight days is sacred, and it sits in
+    the table beside the unfiltered rule precisely so the filter can be judged.
+    """
+    _frame(candles, HIGH_CLOSE_AND_VOLUME, "breakout-volume-trend")
+    _check_volume_mult(volume_mult, "breakout-volume-trend")
+
+    truth, defined = _breakout_volume_signal(candles, window, volume_mult)
+    trend_ma = ind.sma(candles["close"], trend)
+    truth = truth & (candles["close"] > trend_ma)
+    defined = defined & trend_ma.notna()
+    return _turns_true(_condition(truth, defined), "breakout-volume-trend")
 
 
 def _defaults_of(function):
@@ -264,6 +368,18 @@ RULES = {
             function=breakout,
             description="close clears the highest high of the previous 20 bars",
             columns=HIGH_AND_CLOSE,
+        ),
+        Rule(
+            name="breakout-volume",
+            function=breakout_volume,
+            description="breakout on volume above 1.5x its own 20-bar average",
+            columns=HIGH_CLOSE_AND_VOLUME,
+        ),
+        Rule(
+            name="breakout-volume-trend",
+            function=breakout_volume_trend,
+            description="volume breakout taken only while the close is above its 200-bar average",
+            columns=HIGH_CLOSE_AND_VOLUME,
         ),
     )
 }
