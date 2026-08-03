@@ -43,19 +43,65 @@ def _no_network(monkeypatch):
     out are blocked. Creating a socket is harmless; connecting is not.
     getaddrinfo is included so a DNS lookup also fails immediately rather than
     hanging until it times out.
-    """
 
-    def blocked(*args, **kwargs):
+    LOOPBACK IS ALLOWED, DELIBERATELY
+    ---------------------------------
+    The one exception is 127.0.0.1 and ::1. The property being defended here is
+    that no test can reach an *exchange* -- that is what makes the suite pass on
+    a train and fail loudly when a mock is forgotten. A connection to this
+    machine cannot reach an exchange by definition, and the paper dashboard is a
+    local HTTP server whose whole job is to be connected to; testing it against a
+    hand-rolled fake request object would be testing a different thing from the
+    one that ships.
+
+    So loopback is let through and everything else still fails. The guarantee
+    that matters is unchanged, and the one that was never the point is not
+    pretended to.
+    """
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    real_create_connection = socket.create_connection
+    real_getaddrinfo = socket.getaddrinfo
+
+    LOOPBACK = {"127.0.0.1", "::1", "localhost", ""}
+
+    def _is_local(address):
+        if isinstance(address, tuple) and address:
+            return str(address[0]) in LOOPBACK
+        return False
+
+    def refuse():
         raise NetworkAccessAttempted(
             "This test tried to open a network connection. Exchange access must "
             "be mocked -- see the FakeExchange fixture. If you genuinely need a "
-            "live call, put it in a separate script, not in the test suite."
+            "live call, put it in a separate script, not in the test suite. "
+            "(Connections to 127.0.0.1 are allowed, for the local dashboard.)"
         )
 
-    monkeypatch.setattr(socket.socket, "connect", blocked)
-    monkeypatch.setattr(socket.socket, "connect_ex", blocked)
-    monkeypatch.setattr(socket, "create_connection", blocked)
-    monkeypatch.setattr(socket, "getaddrinfo", blocked)
+    def guarded_connect(self, address, *args, **kwargs):
+        if not _is_local(address):
+            refuse()
+        return real_connect(self, address, *args, **kwargs)
+
+    def guarded_connect_ex(self, address, *args, **kwargs):
+        if not _is_local(address):
+            refuse()
+        return real_connect_ex(self, address, *args, **kwargs)
+
+    def guarded_create_connection(address, *args, **kwargs):
+        if not _is_local(address):
+            refuse()
+        return real_create_connection(address, *args, **kwargs)
+
+    def guarded_getaddrinfo(host, *args, **kwargs):
+        if str(host) not in LOOPBACK:
+            refuse()
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+    monkeypatch.setattr(socket, "create_connection", guarded_create_connection)
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
 
 
 @pytest.fixture(autouse=True)

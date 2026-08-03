@@ -19,6 +19,8 @@ dependencies = [
 # no install, which is what the tests and a fresh checkout use.
 [project.scripts]
 collect = "collector.cli:main"
+paper = "paper.cli:main"
+paper-serve = "paper.server:main"
 
 [dependency-groups]
 dev = [

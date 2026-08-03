@@ -9,6 +9,11 @@
 data/
 logs/
 
+# The paper account's ledger and dashboard snapshot. Generated, rewritten every
+# run, and specific to one machine's run history -- committing it would mean the
+# repository claimed a trading record rather than the code that produces one.
+state/
+
 .venv/
 __pycache__/
 *.pyc
