@@ -44,122 +44,13 @@ from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from paper.page import PAGE
+
 __all__ = ["DEFAULT_HOST", "DEFAULT_PORT", "build_parser", "main", "serve"]
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 DEFAULT_SNAPSHOT = "state/snapshot.json"
-
-PAGE = """<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>paper account</title>
-<style>
- :root{--bg:#0f1115;--card:#171a21;--line:#252a34;--dim:#8b94a7;--fg:#e6e9ef;
-       --up:#3fb950;--down:#f85149;--accent:#58a6ff}
- *{box-sizing:border-box}
- body{margin:0;background:var(--bg);color:var(--fg);
-      font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
- .wrap{max-width:1100px;margin:0 auto;padding:24px}
- h1{font-size:16px;font-weight:600;margin:0 0 2px}
- .sub{color:var(--dim);font-size:12px;margin-bottom:20px}
- .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
- .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px}
- .k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
- .v{font-size:20px;margin-top:6px;font-variant-numeric:tabular-nums}
- .up{color:var(--up)} .down{color:var(--down)} .muted{color:var(--dim)}
- table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
- th{text-align:right;color:var(--dim);font-weight:500;font-size:11px;
-    text-transform:uppercase;letter-spacing:.06em;padding:6px 8px;border-bottom:1px solid var(--line)}
- th:first-child,td:first-child{text-align:left}
- td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--line)}
- tr:last-child td{border-bottom:none}
- h2{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
-    margin:24px 0 8px;font-weight:500}
- .banner{background:#1b2028;border:1px solid var(--line);border-left:3px solid var(--accent);
-         border-radius:6px;padding:10px 14px;margin-bottom:20px;font-size:12px;color:var(--dim)}
- .stale{border-left-color:#d29922}
- svg{width:100%;height:180px;display:block}
- .err{color:var(--down)}
-</style></head><body><div class="wrap">
-<h1>paper account <span class="muted" id="rule"></span></h1>
-<div class="sub" id="sub">loading…</div>
-<div class="banner" id="banner"></div>
-<div class="grid" id="cards"></div>
-<h2>equity</h2><div class="card"><svg id="curve" viewBox="0 0 1000 180" preserveAspectRatio="none"></svg></div>
-<h2>open positions <span class="muted" id="opencount"></span></h2>
-<div class="card"><table id="open"></table></div>
-<h2>recent trades</h2>
-<div class="card"><table id="trades"></table></div>
-</div><script>
-const fmt=(n,d=2)=>n==null?"–":Number(n).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
-const pct=n=>n==null?"–":(n>=0?"+":"")+Number(n).toFixed(2)+"%";
-const cls=n=>n==null?"":(n>0?"up":n<0?"down":"");
-const ago=ms=>{const s=(Date.now()-ms)/1000;if(s<3600)return Math.round(s/60)+"m";
-  if(s<86400)return Math.round(s/3600)+"h";return Math.round(s/86400)+"d";};
-
-function curve(points){
-  const svg=document.getElementById("curve");
-  if(!points||points.length<2){svg.innerHTML='<text x="12" y="24" fill="#8b94a7" font-size="12">no closed trades yet</text>';return;}
-  const ys=points.map(p=>p.equity),lo=Math.min(...ys),hi=Math.max(...ys),span=(hi-lo)||1;
-  const d=points.map((p,i)=>{const x=i/(points.length-1)*1000;
-    const y=170-((p.equity-lo)/span)*160;return (i?"L":"M")+x.toFixed(1)+" "+y.toFixed(1);}).join(" ");
-  const last=ys[ys.length-1],first=ys[0],up=last>=first;
-  svg.innerHTML=`<path d="${d}" fill="none" stroke="${up?'#3fb950':'#f85149'}" stroke-width="2"/>`;
-}
-
-function render(s){
-  document.getElementById("rule").textContent="· "+s.config.rule+" · "+s.config.hold+"-bar hold";
-  document.getElementById("sub").textContent=
-    s.config.symbols.join("  ")+"   —   "+s.config.exchange+" "+s.config.timeframe;
-
-  const b=document.getElementById("banner");
-  if(s.cursor){const stale=Date.now()-s.cursor>3*3600*1000;
-    b.className="banner"+(stale?" stale":"");
-    b.textContent=(stale?"⚠ ":"")+"last candle acted on: "+s.cursor_utc+"  ("+ago(s.cursor)+" ago)"
-      +"  ·  paper only — no orders are placed, no credentials are held";
-  } else {b.textContent="nothing processed yet — run `paper` after `collect`";}
-
-  const st=s.stats;
-  document.getElementById("cards").innerHTML=[
-    ["equity",fmt(s.equity),cls(s.return_pct)],
-    ["return",pct(s.return_pct),cls(s.return_pct)],
-    ["cash",fmt(s.cash),""],
-    ["open value",fmt(s.open_value),""],
-    ["closed trades",st.closed,""],
-    ["hit rate",st.hit_rate==null?"–":st.hit_rate.toFixed(1)+"%",""],
-    ["mean / trade",st.mean_net_pct==null?"–":pct(st.mean_net_pct),cls(st.mean_net_pct)],
-    ["refused",st.refused,"muted"],
-  ].map(([k,v,c])=>`<div class="card"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
-
-  curve(s.equity_curve);
-
-  document.getElementById("opencount").textContent=s.open_positions.length?"("+s.open_positions.length+")":"";
-  document.getElementById("open").innerHTML=s.open_positions.length
-    ? "<tr><th>symbol</th><th>entered</th><th>entry</th><th>mark</th><th>unrealised</th></tr>"+
-      s.open_positions.map(p=>`<tr><td>${p.symbol}</td><td class="muted">${p.entry_utc}</td>
-        <td>${fmt(p.entry_price,4)}</td><td>${fmt(p.mark,4)}</td>
-        <td class="${cls(p.unrealised_pct)}">${pct(p.unrealised_pct)}</td></tr>`).join("")
-    : '<tr><td class="muted">flat — nothing open</td></tr>';
-
-  const t=s.recent_trades.slice().reverse();
-  document.getElementById("trades").innerHTML=t.length
-    ? "<tr><th>symbol</th><th>exit</th><th>bars</th><th>entry</th><th>exit px</th><th>net</th></tr>"+
-      t.map(r=>`<tr><td>${r.symbol}</td><td class="muted">${r.exit_reason}</td><td>${r.bars_held}</td>
-        <td>${fmt(r.entry_price,4)}</td><td>${fmt(r.exit_price,4)}</td>
-        <td class="${cls(r.net_return)}">${pct(r.net_return*100)}</td></tr>`).join("")
-    : '<tr><td class="muted">no closed trades yet</td></tr>';
-}
-
-async function tick(){
-  try{const r=await fetch("/api/snapshot",{cache:"no-store"});
-    if(!r.ok)throw new Error("snapshot "+r.status);
-    render(await r.json());
-  }catch(e){document.getElementById("banner").innerHTML=
-    '<span class="err">cannot read snapshot: '+e.message+'</span> — run `paper` to write one';}
-}
-tick();setInterval(tick,15000);
-</script></body></html>"""
 
 
 class Handler(BaseHTTPRequestHandler):

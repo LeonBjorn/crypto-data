@@ -432,3 +432,83 @@ class TestTheNetworkGuardStillBites:
 
         with pytest.raises(NetworkAccessAttempted):
             socket.getaddrinfo("api.binance.com", 443)
+
+
+class TestThePageAndTheSnapshotAgree:
+    """The dashboard's data contract, checked without a browser.
+
+    The page is a string of JavaScript, so nothing type-checks it against the
+    JSON it reads. That is a real gap: rename a field in the snapshot and the
+    page silently renders "undefined" everywhere while still returning 200, and
+    every test that only asserts the server answers would keep passing.
+
+    So the fields the page reads are extracted from the source and required to
+    exist. It is not a substitute for looking at it, but it does catch the
+    failure that would otherwise be found by looking at it a week later.
+    """
+
+    @staticmethod
+    def page_source():
+        from paper.page import PAGE
+        return PAGE[PAGE.index("<script>"):PAGE.index("</script>")]
+
+    def test_every_top_level_field_the_page_reads_exists(self, project):
+        import re
+        run(project.args())
+        snapshot = project.snapshot()
+        read = set(re.findall(r"\bs\.([a-z_]+)", self.page_source()))
+        assert read, "found no field references -- the extraction itself broke"
+        missing = sorted(field for field in read if field not in snapshot)
+        assert not missing, f"the page reads fields the snapshot does not have: {missing}"
+
+    @pytest.mark.parametrize("group,keys", [
+        ("config", ["rule", "hold", "exchange", "timeframe", "symbols", "trail"]),
+        ("stats", ["closed", "hit_rate", "mean_net_pct", "best_pct", "worst_pct", "refused"]),
+        ("risk", ["peak", "max_drawdown_pct", "current_drawdown_pct"]),
+        ("refusals", ["total", "recent"]),
+    ])
+    def test_the_nested_groups_carry_what_the_panels_need(self, project, group, keys):
+        run(project.args())
+        snapshot = project.snapshot()
+        assert all(key in snapshot[group] for key in keys)
+
+    def test_an_open_position_carries_its_hold_progress(self, project):
+        """The progress bar needs more than a price: how far through the hold it
+        is, and when it leaves. An unrealised number at hour three means
+        something different from the same number at hour a hundred and sixty.
+        """
+        run(project.args())
+        for position in project.snapshot()["open_positions"]:
+            for key in ("bars_held", "bars_total", "exit_utc", "progress_pct"):
+                assert key in position
+            assert 0 <= position["progress_pct"] <= 100
+
+    def test_the_by_symbol_panel_covers_the_whole_ledger(self, project):
+        """Not just the recent tail. The research found the edge concentrated in
+        some names and absent in others, which a fifty-trade window can invert.
+        """
+        run(project.args())
+        snapshot = project.snapshot()
+        assert sum(row["trades"] for row in snapshot["by_symbol"]) == snapshot["stats"]["closed"]
+
+    def test_the_drawdown_is_never_positive_and_the_peak_never_below_start(self, project):
+        run(project.args())
+        risk = project.snapshot()["risk"]
+        assert risk["max_drawdown_pct"] <= 0
+        assert risk["peak"] >= project.snapshot()["starting_capital"]
+
+    def test_the_refusal_feed_survives_a_restart(self, project):
+        run(project.args())
+        first = project.snapshot()["refusals"]["recent"]
+        assert first, "this fixture should refuse something"
+        run(project.args())
+        assert project.snapshot()["refusals"]["recent"] == first
+
+    def test_the_script_has_balanced_delimiters(self):
+        """The cheapest possible guard against a syntax error in a string that
+        nothing compiles. It cannot prove the JavaScript is valid; it does catch
+        the bracket left open by an edit, which is the usual way this breaks.
+        """
+        source = self.page_source()
+        for opener, closer in (("{", "}"), ("(", ")"), ("[", "]")):
+            assert source.count(opener) == source.count(closer), f"unbalanced {opener}{closer}"

@@ -227,7 +227,7 @@ class PaperBook:
         """Open a position at this bar's open, if the account allows it."""
         refusal = self.account.refusal(self.symbol)
         if refusal is not None:
-            self.account.reject(bar.index, self.symbol, refusal)
+            self.account.reject(bar.index, self.symbol, refusal, at=bar.timestamp)
             return None
 
         notional = self.account.notional_for(self.symbol)

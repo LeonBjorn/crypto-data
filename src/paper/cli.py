@@ -38,7 +38,7 @@ from pathlib import Path
 
 from collector import settings
 from collector.store import StoreError
-from collector.timeframes import TimeframeError, to_utc_string
+from collector.timeframes import TimeframeError, timeframe_to_ms, to_utc_string
 from paper import state as state_module
 from paper.account import Account, AccountError
 from paper.portfolio import Portfolio, PortfolioError
@@ -244,11 +244,39 @@ def _snapshot(portfolio, frames, config):
     capital = portfolio.account.starting_capital
     equity = portfolio.equity(frames)
 
+    # The realised equity curve, and the drawdown read off it as it is built.
+    # Peak-to-trough is the number that says how bad it got on the way, which a
+    # final figure hides completely -- an account that ended up twenty percent
+    # ahead having been thirty percent behind is not the same account.
     curve = []
     running = capital
+    peak = capital
+    max_drawdown = 0.0
     for row in ledger.to_dict(orient="records"):
         running += row["cash_out"] - row["cash_in"]
+        peak = max(peak, running)
+        max_drawdown = min(max_drawdown, running / peak - 1)
         curve.append({"t": int(row["exit_time"]), "equity": round(running, 2)})
+
+    # Per symbol, over the whole ledger rather than the recent tail. The research
+    # found the edge concentrated in some names and absent in others, so a
+    # dashboard that only ever shows the pooled figure hides the one breakdown
+    # most likely to change what you do next.
+    by_symbol = []
+    if len(ledger):
+        for symbol, rows in ledger.groupby("symbol"):
+            returns = rows["net_return"]
+            by_symbol.append({
+                "symbol": symbol,
+                "trades": int(len(rows)),
+                "hit_rate": round(float((returns > 0).mean()) * 100, 1),
+                "mean_pct": round(float(returns.mean()) * 100, 3),
+                "pnl": round(float((rows["cash_out"] - rows["cash_in"]).sum()), 2),
+            })
+        by_symbol.sort(key=lambda entry: entry["pnl"], reverse=True)
+
+    step = timeframe_to_ms(config["timeframe"])
+    hold_ms = config["hold"] * step
 
     return {
         "generated_at": int(portfolio.cursor or 0),
@@ -276,6 +304,15 @@ def _snapshot(portfolio, frames, config):
                     (float(frames[position.symbol]["close"].iloc[-1]) / position.entry_price - 1)
                     * 100, 4
                 ),
+                # How far through its holding period the trade is. Shown because
+                # an unrealised number means something different at hour three
+                # than at hour a hundred and sixty: one is noise, the other is
+                # nearly the result.
+                "bars_held": int(((portfolio.cursor or position.entry_time) - position.entry_time) // step),
+                "bars_total": config["hold"],
+                "exit_utc": to_utc_string(position.entry_time + hold_ms),
+                "progress_pct": round(min(100.0, max(0.0,
+                    ((portfolio.cursor or position.entry_time) - position.entry_time) / hold_ms * 100)), 1),
             }
             for position in portfolio.open_positions()
         ],
@@ -288,6 +325,18 @@ def _snapshot(portfolio, frames, config):
             "worst_pct": round(float(ledger["net_return"].min()) * 100, 4) if len(ledger) else None,
             "refused": portfolio.rejections_total,
         },
+        "risk": {
+            "peak": round(peak, 2),
+            "max_drawdown_pct": round(max_drawdown * 100, 2),
+            "current_drawdown_pct": round((running / peak - 1) * 100, 2) if peak else 0.0,
+        },
+        "by_symbol": by_symbol,
+        "refusals": {
+            "total": portfolio.rejections_total,
+            "recent": portfolio.rejection_feed()[-25:],
+        },
+        "timeframe_ms": step,
+        "next_candle": (portfolio.cursor + step) if portfolio.cursor else None,
         "equity_curve": curve,
         "recent_trades": ledger.tail(50).to_dict(orient="records"),
     }

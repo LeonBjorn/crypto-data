@@ -79,6 +79,10 @@ class Rejection:
     bar: int
     symbol: str
     reason: str
+    # The candle's open time as well as its position. The bar number is what the
+    # engine has to hand; the timestamp is the only one of the two that still
+    # means anything once the frame has grown underneath it.
+    at: int = None
 
 
 def _positive_number(value, name, *, upper=None):
@@ -202,9 +206,9 @@ class Account:
         else:
             self._held.pop(symbol, None)
 
-    def reject(self, bar, symbol, reason):
+    def reject(self, bar, symbol, reason, at=None):
         """Record a signal that could not be taken."""
-        self.rejections.append(Rejection(bar=bar, symbol=symbol, reason=reason))
+        self.rejections.append(Rejection(bar=bar, symbol=symbol, reason=reason, at=at))
 
     def equity(self, marks=None) -> float:
         """Cash plus open positions marked at `marks` (symbol -> value).

@@ -79,6 +79,9 @@ class Portfolio:
         # resumed run must add to it rather than replace it, or every restart
         # would report that the wallet had never refused anything.
         self._rejections_before = 0
+        # The tail that survives a restart, so the dashboard's feed does not go
+        # blank the moment the process is restarted.
+        self.recent_rejections = []
 
     # -- moving forward -----------------------------------------------------
 
@@ -140,6 +143,19 @@ class Portfolio:
             )
         return combined.sort_values("exit_time").reset_index(drop=True)
 
+    def rejection_feed(self) -> list:
+        """The most recent refusals, carried over from earlier runs and this one.
+
+        Capped, because a busy account refuses thousands and the whole list is
+        worth nothing to anyone. The recent ones say what is being refused now;
+        the total, kept separately, says how much has been refused altogether.
+        """
+        fresh = [
+            {"bar": r.bar, "symbol": r.symbol, "reason": r.reason, "at": r.at}
+            for r in self.account.rejections
+        ]
+        return (self.recent_rejections + fresh)[-MAX_REJECTIONS_KEPT:]
+
     def open_positions(self) -> list:
         return [position for book in self.books.values() for position in book.positions]
 
@@ -176,10 +192,7 @@ class Portfolio:
             ],
             "ledger": self.ledger().to_dict(orient="records"),
             "rejections_total": self.rejections_total,
-            "rejections_recent": [
-                {"bar": r.bar, "symbol": r.symbol, "reason": r.reason}
-                for r in self.account.rejections[-MAX_REJECTIONS_KEPT:]
-            ],
+            "rejections_recent": self.rejection_feed(),
         }
 
     def restore(self, state, frames):
@@ -200,6 +213,7 @@ class Portfolio:
         self.account.cash = float(state.get("cash", self.account.starting_capital))
         self._rejections_before = int(state.get("rejections_total", 0))
         self.rejections_total = self._rejections_before
+        self.recent_rejections = list(state.get("rejections_recent", []))
 
         indices = {
             symbol: {int(stamp): index for index, stamp in enumerate(frame["timestamp"])}
