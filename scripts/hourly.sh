@@ -35,6 +35,29 @@ mkdir -p "$PROJECT/logs"
 stamp() { date -u "+%Y-%m-%d %H:%M:%S UTC"; }
 say()   { echo "[$(stamp)] $*" >>"$LOG"; }
 
+# Rotate before writing, matching what logging_setup.py already does for
+# collector.log. Roughly half a kilobyte per cycle is nothing per day and about
+# four megabytes a year, which is the kind of growth that is invisible until it
+# is a decade old. One megabyte holds about two thousand cycles -- three months
+# of hourly runs -- and two old files are kept.
+rotate() {
+  local file="$1" limit=1048576
+  [ -f "$file" ] || return 0
+  local size
+  size=$(wc -c <"$file" 2>/dev/null || echo 0)
+  if [ "$size" -gt "$limit" ]; then
+    [ -f "$file.1" ] && mv -f "$file.1" "$file.2"
+    mv -f "$file" "$file.1"
+  fi
+}
+
+rotate "$LOG"
+# launchd appends to these itself and never truncates them. They should stay
+# empty -- everything the job says goes to hourly.log -- but if the job ever
+# starts failing before it can log, this is what stops that filling the disk.
+rotate "$PROJECT/logs/launchd.out.log"
+rotate "$PROJECT/logs/launchd.err.log"
+
 say "cycle start"
 
 # --- fetch -----------------------------------------------------------------
