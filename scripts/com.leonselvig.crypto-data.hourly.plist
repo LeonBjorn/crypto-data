@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.leonselvig.crypto-data.hourly</string>
+
+  <!-- bash rather than the script directly, so the shebang and the executable
+       bit are not two more things that can quietly be wrong. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/leonselvigbjornaraa/crypto-data/scripts/hourly.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/leonselvigbjornaraa/crypto-data</string>
+
+  <!-- Two minutes past every hour. The candle closes exactly on the hour, and
+       asking for it at :00 is a race with the exchange publishing it. Two
+       minutes costs nothing and removes the race entirely. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Minute</key>
+    <integer>2</integer>
+  </dict>
+
+  <!-- Run once at login as well. The cycle is idempotent, so an extra run is
+       harmless, and it means a machine that was asleep or shut down catches up
+       as soon as it comes back rather than waiting for the next hour. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- launchd's own errors only. Everything the job has to say goes to
+       logs/hourly.log, which the script timestamps. -->
+  <key>StandardOutPath</key>
+  <string>/Users/leonselvigbjornaraa/crypto-data/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/leonselvigbjornaraa/crypto-data/logs/launchd.err.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
