@@ -20,6 +20,21 @@ asleep catches up rather than waiting. The paths inside the plist are absolute,
 because launchd starts with almost no environment -- if the project moves, they
 have to be edited.
 
+## Changing it
+
+Editing `hourly.sh` takes effect on the next run with no reload -- the plist
+just runs bash on the script, so it is read fresh every hour. Only editing the
+**plist** (timing, paths, log locations) needs launchd to be told:
+
+```
+launchctl bootout gui/$(id -u)/com.leonselvig.crypto-data.hourly
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.leonselvig.crypto-data.hourly.plist
+```
+
+Running `bootstrap` on a service that is already loaded fails with
+`Bootstrap failed: 5: Input/output error`. That is harmless, and it means it is
+already running -- check with `launchctl list | grep crypto`.
+
 ## Watching it
 
 ```
