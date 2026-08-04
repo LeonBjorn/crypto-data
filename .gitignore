@@ -39,3 +39,10 @@ __pycache__/
 # be noise in a diff -- but note they are the only copies that exist, so the
 # directory matters even though its contents are not committed.
 state/backups/
+
+# Credentials. Never committed, and named here so that an accidental `git add -A`
+# cannot pick one up. A key in git history is a key that has to be rotated, and
+# history is forever.
+.env
+.env.*
+secrets/
