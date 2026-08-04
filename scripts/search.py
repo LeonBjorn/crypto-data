@@ -30,9 +30,37 @@ Hyperliquid funding charged: nothing survived.
   - With 38 configurations, 4.2 of them are *expected* to reach five-of-six
     positive windows by chance alone. Finding one is not evidence of anything.
 
-That is the honest state: no edge was found in this data at this frequency after
-costs. It is a real answer, and a cheaper one than discovering the same thing
-with money.
+AND AT ONE-MINUTE RESOLUTION
+---------------------------
+Tested afterwards, on 5.28M one-minute bars across the same five symbols: does
+price revert, or continue, after an extreme one-minute move? This is the
+best-documented short-horizon effect in any liquid market -- a large move takes
+out resting liquidity, overshoots, and partly reverts as makers replenish -- and
+it is mechanical rather than a forecast of trend, which is the one category the
+sweeps above had not touched.
+
+The first run showed momentum of +0.19% to +0.37% after 3-to-6 sigma moves,
+comfortably clearing the 0.130% round trip at Hyperliquid taker. It was a
+lookahead. The trigger return spanned close[j] to close[j+1] and the entry was
+placed at open[j+1] -- before the close that defined the trigger -- so the
+measurement was capturing part of the trigger move itself.
+
+Moved to open[j+2], the first bar genuinely tradable after the signal is known,
+the effect is:
+
+    3 sigma   -0.000%      5 sigma   +0.000%      6 sigma   -0.005%
+
+Zero to three decimal places, on every horizon from 5 to 120 minutes, across all
+five symbols, with |t| below 1 everywhere. The entire apparent edge was the
+one-bar misalignment.
+
+That is worth recording twice over: as a result, and as a reminder that the
+guard in signals/ exists because this mistake is invisible. Nothing about the
+first run looked wrong -- the numbers were simply a little too good.
+
+That is the honest state: no edge was found in this data at either frequency
+after costs. It is a real answer, and a cheaper one than discovering the same
+thing with money.
 
 It is not a way to pick the best one and believe the number attached to it.
 Twenty configurations tried against one two-year sample will produce a good
