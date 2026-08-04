@@ -408,6 +408,8 @@ def _snapshot(portfolio, frames, config):
             returns = rows["net_return"]
             by_symbol.append({
                 "symbol": symbol,
+                "wins": int((returns > 0).sum()),
+                "losses": int((returns <= 0).sum()),
                 "trades": int(len(rows)),
                 "hit_rate": round(float((returns > 0).mean()) * 100, 1),
                 "mean_pct": round(float(returns.mean()) * 100, 3),
@@ -440,6 +442,17 @@ def _snapshot(portfolio, frames, config):
                 "entry_price": position.entry_price,
                 "qty": position.qty,
                 "mark": float(frames[position.symbol]["close"].iloc[-1]),
+                # The money, rather than only the percentages. A position that
+                # is 19% up tells you nothing about whether it matters to the
+                # account; 19% of $340 and 19% of $3,400 are different facts.
+                "cost": round(position.cash_in, 2),
+                "value": round(position.qty * float(frames[position.symbol]["close"].iloc[-1]), 2),
+                "pnl": round(
+                    position.qty * float(frames[position.symbol]["close"].iloc[-1]) - position.cash_in, 2
+                ),
+                "weight_pct": round(
+                    position.qty * float(frames[position.symbol]["close"].iloc[-1]) / equity * 100, 2
+                ) if equity else None,
                 "unrealised_pct": round(
                     (float(frames[position.symbol]["close"].iloc[-1]) / position.entry_price - 1)
                     * 100, 4
@@ -457,6 +470,12 @@ def _snapshot(portfolio, frames, config):
             for position in portfolio.open_positions()
         ],
         "open_value": round(sum(marks.values()), 2),
+        "invested_pct": round(sum(marks.values()) / equity * 100, 2) if equity else 0.0,
+        "cash_pct": round(portfolio.account.cash / equity * 100, 2) if equity else 100.0,
+        "pnl_total": round(equity - capital, 2),
+        "pnl_realised": round(running - capital, 2),
+        "pnl_unrealised": round(equity - running, 2),
+        "quote": "USDT",
         "stats": {
             "closed": int(len(ledger)),
             "hit_rate": round(float((ledger["net_return"] > 0).mean()) * 100, 2) if len(ledger) else None,

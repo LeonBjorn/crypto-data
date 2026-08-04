@@ -659,3 +659,80 @@ class TestTheDrawdownLimitIsLegibleOnThePage:
         from paper.page import PAGE
         assert 'id="halted"' in PAGE
         assert "HALTED" in PAGE
+
+
+class TestTheMoneyAddsUp:
+    """The holdings page is only worth having if its arithmetic closes.
+
+    A dashboard showing positions worth one number and an equity of another is
+    worse than one showing neither, because the reader cannot tell which to
+    believe and will usually believe the larger.
+    """
+
+    def test_positions_plus_cash_equals_equity(self, project):
+        run(project.args())
+        s = project.snapshot()
+        held = sum(p["value"] for p in s["open_positions"])
+        assert held + s["cash"] == pytest.approx(s["equity"], abs=0.05)
+
+    def test_the_split_percentages_cover_the_account(self, project):
+        run(project.args())
+        s = project.snapshot()
+        assert s["invested_pct"] + s["cash_pct"] == pytest.approx(100.0, abs=0.5)
+
+    def test_realised_plus_unrealised_is_the_total_pnl(self, project):
+        run(project.args())
+        s = project.snapshot()
+        assert s["pnl_realised"] + s["pnl_unrealised"] == pytest.approx(s["pnl_total"], abs=0.05)
+
+    def test_total_pnl_is_equity_less_what_was_started_with(self, project):
+        run(project.args())
+        s = project.snapshot()
+        assert s["pnl_total"] == pytest.approx(s["equity"] - s["starting_capital"], abs=0.05)
+
+    def test_every_holding_carries_its_money_not_only_its_percentage(self, project):
+        """19% of $340 and 19% of $3,400 are different facts, and only one of
+        them matters to the account.
+        """
+        run(project.args())
+        for position in project.snapshot()["open_positions"]:
+            for key in ("cost", "value", "pnl", "weight_pct"):
+                assert key in position
+            assert position["value"] - position["cost"] == pytest.approx(position["pnl"], abs=0.05)
+
+    def test_the_weights_do_not_exceed_the_account(self, project):
+        run(project.args())
+        s = project.snapshot()
+        assert sum(p["weight_pct"] for p in s["open_positions"]) <= 100.5
+
+
+class TestThePagesExist:
+    @staticmethod
+    def page():
+        from paper.page import PAGE
+        return PAGE
+
+    @pytest.mark.parametrize("view", ["overview", "holdings", "trades", "risk"])
+    def test_each_view_has_a_container_and_a_tab(self, view):
+        page = self.page()
+        assert f'id="v-{view}"' in page
+        assert f'["{view}"' in page or f'"{view}"' in page
+
+    def test_only_one_view_shows_at_a_time(self):
+        """The CSS carries the switch, so a broken rule would show all four
+        stacked and still pass every data test.
+        """
+        page = self.page()
+        assert ".view{display:none}" in page
+        assert ".view.on{display:flex" in page
+
+    def test_the_chosen_view_is_remembered(self):
+        assert '"view"' in self.page() or "view:" in self.page()
+
+    def test_the_footer_names_the_actual_currency(self):
+        """The quote is USDT. Writing "$" without saying so asserts a peg the
+        page does not check.
+        """
+        page = self.page()
+        assert "USDT" in page
+        assert 'id="foot"' in page

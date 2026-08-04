@@ -82,6 +82,16 @@ PAGE = """<!doctype html>
  button:hover{color:var(--fg);border-color:var(--faint)}
  button.on{color:var(--bg);background:var(--accent);border-color:var(--accent)}
  .btns{display:flex;gap:4px;flex-wrap:wrap}
+ .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:2px}
+ .tab{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;
+   padding:6px 14px;color:var(--faint);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+ .tab:hover{color:var(--fg);border-color:var(--line2)}
+ .tab.on{color:var(--accent);border-color:var(--accent);background:none}
+ .view{display:none} .view.on{display:flex;flex-direction:column;gap:10px}
+ .big{font-size:26px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+ .split{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--line2);margin-top:8px}
+ .split i{display:block;height:100%}
+ tfoot td{border-top:1px solid var(--line2);border-bottom:none;padding-top:6px;color:var(--fg)}
 
  .strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:1px;
    background:var(--line);border:1px solid var(--line);border-radius:6px;overflow:hidden}
@@ -146,11 +156,14 @@ PAGE = """<!doctype html>
   </div>
 </div>
 
+<div class="tabs" id="tabs"></div>
+
 <div id="halted" style="display:none;background:#2a1416;border:1px solid #ff5f56;
   border-radius:6px;padding:10px 14px;color:#ff8b85;font-size:12px"></div>
 
 <div class="strip" id="strip"></div>
 
+<div class="view" id="v-overview">
 <div class="cols">
   <div class="panel">
     <div class="hd">equity <em id="curvenote"></em></div>
@@ -169,25 +182,53 @@ PAGE = """<!doctype html>
   <div class="hd">open positions <em id="opennote"></em></div>
   <div class="body"><table id="open"></table></div>
 </div>
+</div>
 
+<div class="view" id="v-holdings">
+  <div class="cols" style="grid-template-columns:1fr 1fr 1fr">
+    <div class="panel"><div class="hd">total equity</div><div class="body">
+      <div class="big" id="h-equity"></div><div class="dim" id="h-equity-sub"></div>
+      <div class="split"><i id="h-bar-inv" style="background:var(--accent)"></i><i id="h-bar-cash" style="background:var(--line2)"></i></div>
+      <div class="dim" style="margin-top:4px;font-size:10.5px" id="h-split"></div>
+    </div></div>
+    <div class="panel"><div class="hd">profit and loss</div><div class="body">
+      <div class="big" id="h-pnl"></div><div class="dim" id="h-pnl-sub"></div></div></div>
+    <div class="panel"><div class="hd">cash available</div><div class="body">
+      <div class="big" id="h-cash"></div><div class="dim" id="h-cash-sub"></div></div></div>
+  </div>
+  <div class="panel"><div class="hd">holdings <em id="h-note"></em></div>
+    <div class="body"><table id="h-table"></table></div></div>
+  <div class="panel"><div class="hd">realised by symbol <em>closed trades only</em></div>
+    <div class="body"><table id="h-realised"></table></div></div>
+</div>
+
+<div class="view" id="v-trades">
+  <div class="panel"><div class="hd">every closed trade <em id="tradenote"></em></div>
+    <div class="body"><div class="scroll" style="max-height:70vh"><table id="trades"></table></div></div></div>
+</div>
+
+<div class="view" id="v-risk">
 <div class="cols3">
   <div class="panel">
     <div class="hd">by symbol <em id="symnote">click to filter</em></div>
     <div class="body"><table id="bysym"></table></div>
   </div>
   <div class="panel">
-    <div class="hd">trades <em id="tradenote"></em></div>
-    <div class="body"><div class="scroll"><table id="trades"></table></div></div>
-  </div>
-  <div class="panel">
     <div class="hd">refused <em id="refnote"></em></div>
     <div class="body"><div class="feed" id="refused"></div></div>
   </div>
 </div>
+</div>
+
+<div style="color:#4c5568;font-size:10.5px;padding:2px 2px 10px" id="foot"></div>
 
 </div><script>
 const N=(v,d=2)=>v==null||isNaN(v)?"–":Number(v).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
 const P=v=>v==null||isNaN(v)?"–":(v>=0?"+":"")+Number(v).toFixed(2)+"%";
+// Money gets a currency mark and a sign. The quote is USDT rather than dollars;
+// "$" is what everyone reads it as, and the footer says which it really is.
+const M=(v,d=2)=>v==null||isNaN(v)?"–":"$"+Number(v).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
+const MS=(v,d=2)=>v==null||isNaN(v)?"–":(v>=0?"+":"−")+"$"+Math.abs(Number(v)).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
 const C=v=>v==null||isNaN(v)?"":v>0?"up":v<0?"down":"dim";
 // A glyph as well as a colour: colour alone is lost to colourblind viewing and
 // to a glance at a bright screen, and this is the number people glance at.
@@ -197,11 +238,12 @@ const day=ms=>new Date(ms).toISOString().slice(5,10);
 const date=ms=>new Date(ms).toISOString().slice(0,10);
 
 const DAY=86400000, RANGES=[["1M",30],["3M",90],["1Y",365],["ALL",0]];
+const VIEWS=[["overview","overview"],["holdings","holdings"],["trades","trades"],["risk","risk"]];
 const store={
   get(){try{return JSON.parse(localStorage.getItem("paperui"))||{}}catch(e){return{}}},
   set(v){try{localStorage.setItem("paperui",JSON.stringify(v))}catch(e){}}
 };
-let ui=Object.assign({range:0,sort:"exit_time",dir:-1,symbol:null,paused:false},store.get());
+let ui=Object.assign({range:0,sort:"exit_time",dir:-1,symbol:null,paused:false,view:"overview"},store.get());
 const save=()=>store.set(ui);
 
 let snap=null, timer=null;
@@ -325,12 +367,13 @@ function render(s){
       +"Open positions still run to their exits. Resuming is a manual decision.";
   } else { halt.style.display="none"; }
   document.getElementById("strip").innerHTML=[
-    ["equity",N(s.equity),C(s.return_pct)],
+    ["equity",M(s.equity),C(s.return_pct)],
     ["return",ARROW(s.return_pct)+" "+P(s.return_pct),C(s.return_pct)],
     ["max drawdown",P(rk.max_drawdown_pct),"down"],
     ["from peak",P(rk.current_drawdown_pct),C(rk.current_drawdown_pct)],
-    ["cash",N(s.cash),""],
-    ["open",s.open_positions.length+" · "+N(s.open_value,0),""],
+    ["cash",M(s.cash),""],
+    ["open",s.open_positions.length+" · "+M(s.open_value,0),""],
+    ["p&l",MS(s.pnl_total,0),C(s.pnl_total)],
     ["closed",st.closed,""],
     ["refused",N(st.refused,0),"dim"],
     ...(rk.drawdown_limit_pct!=null?[["dd limit",
@@ -345,15 +388,15 @@ function render(s){
   chart(s);
 
   document.getElementById("risk").innerHTML=`
-    <tr><td class="dim">peak realised</td><td>${N(rk.peak)}</td></tr>
+    <tr><td class="dim">peak realised</td><td>${M(rk.peak)}</td></tr>
     <tr><td class="dim">max drawdown</td><td class="down">${P(rk.max_drawdown_pct)}</td></tr>
     <tr><td class="dim">from peak now</td><td class="${C(rk.current_drawdown_pct)}">${P(rk.current_drawdown_pct)}</td></tr>
-    <tr><td class="dim">unrealised</td><td class="${C(s.equity_now?s.equity_now.unrealised:0)}">${s.equity_now?N(s.equity_now.unrealised):"–"}</td></tr>
+    <tr><td class="dim">unrealised</td><td class="${C(s.equity_now?s.equity_now.unrealised:0)}">${s.equity_now?MS(s.equity_now.unrealised):"–"}</td></tr>
     ${s.benchmark?`<tr><td class="dim">hold ${s.benchmark.symbol}</td><td class="${C(s.benchmark.return_pct)}">${P(s.benchmark.return_pct)}</td></tr>
     <tr><td class="dim">its max drawdown</td><td class="down">${P(s.benchmark.max_drawdown_pct)}</td></tr>`:""}
     ${rk.drawdown_limit_pct!=null?`<tr><td class="dim">drawdown limit</td>
       <td class="${rk.drawdown_tripped?"down":"dim"}">${rk.drawdown_tripped?"TRIPPED":P(rk.guard_drawdown_pct)+" of −"+rk.drawdown_limit_pct.toFixed(0)+"%"}</td></tr>`:""}
-    ${rk.guard_peak!=null?`<tr><td class="dim">limit measured from</td><td>${N(rk.guard_peak)}</td></tr>`:""}
+    ${rk.guard_peak!=null?`<tr><td class="dim">limit measured from</td><td>${M(rk.guard_peak)}</td></tr>`:""}
     ${rk.expected_shortfall_95!=null?`<tr><td class="dim">ES (95%)</td>
       <td class="down">−${rk.expected_shortfall_95.toFixed(2)}%</td></tr>`:""}
     ${rk.sizing?`<tr><td class="dim">sizing</td><td class="dim">${rk.sizing}</td></tr>`:""}
@@ -383,7 +426,7 @@ function render(s){
     + (s.by_symbol.length? s.by_symbol.map(b=>`<tr class="click ${ui.symbol===b.symbol?"sel":""}" onclick="pickSymbol('${b.symbol}')">
         <td>${b.symbol}</td><td class="dim">${b.trades}</td><td class="dim">${b.hit_rate.toFixed(0)}%</td>
         <td class="${C(b.mean_pct)}">${P(b.mean_pct)}</td>
-        <td class="${C(b.pnl)}">${N(b.pnl,0)}</td></tr>`).join("")
+        <td class="${C(b.pnl)}">${MS(b.pnl,0)}</td></tr>`).join("")
       : `<tr><td class="empty" colspan="5">nothing closed yet</td></tr>`);
 
   let rows=(s.trades||[]).filter(r=>!ui.symbol||r.symbol===ui.symbol);
@@ -392,12 +435,14 @@ function render(s){
     return (typeof x==="string"?x.localeCompare(y):x-y)*ui.dir;});
   document.getElementById("tradenote").textContent=rows.length+" shown";
   document.getElementById("trades").innerHTML=
-    `<tr>${TH("symbol","symbol")}${TH("exit","exit_time")}${TH("why","exit_reason")}${TH("held","bars_held")}${TH("net","net_return")}</tr>`
-    + (rows.length? rows.slice(0,300).map(r=>`<tr>
+    `<tr>${TH("symbol","symbol")}${TH("exit","exit_time")}${TH("why","exit_reason")}${TH("held","bars_held")}${TH("in","cash_in")}${TH("out","cash_out")}${TH("p&l","net_return")}${TH("net %","net_return")}</tr>`
+    + (rows.length? rows.slice(0,400).map(r=>`<tr>
         <td>${r.symbol}</td><td class="dim">${day(r.exit_time)}</td>
         <td class="dim">${r.exit_reason}</td><td class="dim">${r.bars_held}h</td>
+        <td class="dim">${M(r.cash_in,0)}</td><td class="dim">${M(r.cash_out,0)}</td>
+        <td class="${C(r.cash_out-r.cash_in)}">${MS(r.cash_out-r.cash_in)}</td>
         <td class="${C(r.net_return)}">${P(r.net_return*100)}</td></tr>`).join("")
-      : `<tr><td class="empty" colspan="5">no trades in this range</td></tr>`);
+      : `<tr><td class="empty" colspan="8">no trades in this range</td></tr>`);
 
   const rf=((s.refusals&&s.refusals.recent)||[]).filter(r=>!ui.symbol||r.symbol===ui.symbol);
   document.getElementById("refnote").textContent=N(s.refusals?s.refusals.total:0,0)+" total";
@@ -406,10 +451,90 @@ function render(s){
         <b>${r.symbol}</b><span>${r.reason}</span></div>`).join("")
     : `<div class="empty">nothing refused</div>`;
 
+  renderHoldings(s);
+  // Said once, plainly. Everything is priced in the quote currency of the pairs
+  // being traded, which is USDT and not dollars -- they are close and they are
+  // not the same thing, and a page that writes "$" without saying so is quietly
+  // asserting a peg it does not check.
+  document.getElementById("foot").textContent=
+    "amounts are in "+(s.quote||"USDT")+", shown with $ for readability · paper account, no orders are placed, no credentials are held";
   tickClock();
 }
 
+function renderHoldings(s){
+  const eq=s.equity, cap=s.starting_capital;
+  document.getElementById("h-equity").textContent=M(eq);
+  document.getElementById("h-equity-sub").innerHTML=
+    `started with ${M(cap,0)} &nbsp;·&nbsp; <span class="${C(s.return_pct)}">${P(s.return_pct)}</span>`;
+  const inv=s.invested_pct||0, csh=s.cash_pct||0;
+  document.getElementById("h-bar-inv").style.width=inv+"%";
+  document.getElementById("h-bar-cash").style.width=csh+"%";
+  document.getElementById("h-split").textContent=
+    `${inv.toFixed(0)}% invested in ${s.open_positions.length} position(s) · ${csh.toFixed(0)}% cash`;
+
+  document.getElementById("h-pnl").innerHTML=
+    `<span class="${C(s.pnl_total)}">${MS(s.pnl_total)}</span>`;
+  document.getElementById("h-pnl-sub").innerHTML=
+    `realised <span class="${C(s.pnl_realised)}">${MS(s.pnl_realised,0)}</span> &nbsp;·&nbsp; `
+    +`open <span class="${C(s.pnl_unrealised)}">${MS(s.pnl_unrealised,0)}</span>`;
+
+  document.getElementById("h-cash").textContent=M(s.cash);
+  document.getElementById("h-cash-sub").textContent=
+    `${csh.toFixed(0)}% of the account is not at risk`;
+
+  const op=s.open_positions;
+  document.getElementById("h-note").textContent=op.length?op.length+" open":"flat";
+  const totCost=op.reduce((a,p)=>a+(p.cost||0),0), totVal=op.reduce((a,p)=>a+(p.value||0),0);
+  document.getElementById("h-table").innerHTML = op.length
+    ? `<tr><th>symbol</th><th>quantity</th><th>entry</th><th>price now</th><th>cost</th>
+         <th>value now</th><th>profit</th><th>%</th><th>weight</th><th>time left</th></tr>`
+      + op.map(p=>`<tr>
+          <td>${p.symbol}</td>
+          <td class="dim">${Number(p.qty).toLocaleString("en-US",{maximumFractionDigits:4})}</td>
+          <td class="dim">${N(p.entry_price,4)}</td><td>${N(p.mark,4)}</td>
+          <td class="dim">${M(p.cost)}</td><td>${M(p.value)}</td>
+          <td class="${C(p.pnl)}">${MS(p.pnl)}</td>
+          <td class="${C(p.unrealised_pct)}">${P(p.unrealised_pct)}</td>
+          <td class="dim">${p.weight_pct==null?"–":p.weight_pct.toFixed(0)+"%"}</td>
+          <td class="dim">${Math.max(0,p.bars_total-p.bars_held)}h</td></tr>`).join("")
+      + `<tfoot><tr><td>total</td><td></td><td></td><td></td>
+           <td>${M(totCost)}</td><td>${M(totVal)}</td>
+           <td class="${C(totVal-totCost)}">${MS(totVal-totCost)}</td>
+           <td colspan="3"></td></tr>
+         <tr><td class="dim">cash</td><td colspan="4"></td>
+           <td class="dim">${M(s.cash)}</td><td colspan="3"></td>
+           <td class="dim">${(s.cash_pct||0).toFixed(0)}%</td></tr></tfoot>`
+    : `<tr><td class="empty" colspan="10">flat — the whole account is in cash</td></tr>`;
+
+  document.getElementById("h-realised").innerHTML=
+    `<tr><th>symbol</th><th>trades</th><th>won</th><th>lost</th><th>hit</th><th>mean</th><th>realised p&l</th></tr>`
+    + (s.by_symbol.length? s.by_symbol.map(b=>`<tr class="click ${ui.symbol===b.symbol?"sel":""}" onclick="pickSymbol('${b.symbol}')">
+        <td>${b.symbol}</td><td class="dim">${b.trades}</td>
+        <td class="dim">${b.wins==null?"–":b.wins}</td><td class="dim">${b.losses==null?"–":b.losses}</td>
+        <td class="dim">${b.hit_rate.toFixed(0)}%</td>
+        <td class="${C(b.mean_pct)}">${P(b.mean_pct)}</td>
+        <td class="${C(b.pnl)}">${MS(b.pnl)}</td></tr>`).join("")
+        + `<tfoot><tr><td>total</td><td class="dim">${s.by_symbol.reduce((a,b)=>a+b.trades,0)}</td>
+             <td colspan="4"></td>
+             <td class="${C(s.pnl_realised)}">${MS(s.pnl_realised)}</td></tr></tfoot>`
+      : `<tr><td class="empty" colspan="7">nothing closed yet</td></tr>`);
+}
+
+function showView(name){
+  ui.view=name; save();
+  VIEWS.forEach(([id])=>{
+    document.getElementById("v-"+id).classList.toggle("on", id===name);
+  });
+  [...document.getElementById("tabs").children].forEach(b=>
+    b.classList.toggle("on", b.dataset.v===name));
+}
+
 /* ---- controls ---- */
+document.getElementById("tabs").innerHTML=
+  VIEWS.map(([id,label])=>`<button class="tab" data-v="${id}">${label}</button>`).join("");
+document.getElementById("tabs").onclick=e=>{
+  if(e.target.dataset.v) showView(e.target.dataset.v);
+};
 document.getElementById("ranges").innerHTML=
   RANGES.map(([l,d])=>`<button data-d="${d}" class="${ui.range===d?"on":""}">${l}</button>`).join("");
 document.getElementById("ranges").onclick=e=>{
@@ -446,5 +571,6 @@ async function poll(){
     document.getElementById("status").innerHTML='<span class="err">'+e.message+'</span> — run `paper`';
   }
 }
+showView(ui.view||"overview");
 poll(); setPaused(ui.paused); setInterval(tickClock,1000);
 </script></body></html>"""
