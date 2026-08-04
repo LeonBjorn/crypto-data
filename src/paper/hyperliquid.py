@@ -87,6 +87,10 @@ DEFAULT_KILL_SWITCH = "state/STOP"
 # reason, so it is worth checking here where the message can say which.
 ADDRESS_PATTERN = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
+# Said once per process. Every broker constructed in an unauthenticated run
+# repeated it, which turns a useful notice into something to scroll past.
+_warned_unauthenticated = False
+
 MAINNET_ENV = "HYPERLIQUID_ALLOW_MAINNET"
 ADDRESS_ENV = "HYPERLIQUID_WALLET_ADDRESS"
 KEY_ENV = "HYPERLIQUID_PRIVATE_KEY"
@@ -182,11 +186,14 @@ class HyperliquidBroker:
                 # a rehearsal. What it cannot do is read the account, so the
                 # exposure cap has nothing to check -- sound only because nothing
                 # is sent, and said out loud rather than left to be assumed.
-                log.warning(
-                    "no credentials in the environment; running unauthenticated. "
-                    "Symbols and lot sizes resolve normally, orders are logged "
-                    "rather than sent, and the exposure cap is not enforceable."
-                )
+                global _warned_unauthenticated
+                if not _warned_unauthenticated:
+                    log.warning(
+                        "no credentials in the environment; running unauthenticated. "
+                        "Symbols and lot sizes resolve normally, orders are logged "
+                        "rather than sent, and the exposure cap is not enforceable."
+                    )
+                    _warned_unauthenticated = True
                 self.authenticated = False
                 public = ccxt.hyperliquid({"enableRateLimit": True})
                 if self.network == "testnet":

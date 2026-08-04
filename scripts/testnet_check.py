@@ -188,8 +188,17 @@ def stage_sizes(broker, price):
 def stage_authenticated(price):
     """With credentials: can we read our own account. Still sends nothing."""
     head(6, "authenticated reads")
-    if not os.environ.get(ADDRESS_ENV) or not os.environ.get(KEY_ENV):
-        note(f"skipped -- set {ADDRESS_ENV} and {KEY_ENV} to run this stage")
+    have_address = bool((os.environ.get(ADDRESS_ENV) or "").strip())
+    have_key = bool((os.environ.get(KEY_ENV) or "").strip())
+    if not (have_address and have_key):
+        # Naming which one is missing, because "set both" is unhelpful when one
+        # of them already is -- and the usual cause is a new shell, where an
+        # export from the previous one is simply gone.
+        missing = [name for name, present in
+                   ((ADDRESS_ENV, have_address), (KEY_ENV, have_key)) if not present]
+        note(f"skipped -- {' and '.join(missing)} not set in this shell")
+        note(f"present: {[n for n, p in ((ADDRESS_ENV, have_address), (KEY_ENV, have_key)) if p] or 'neither'}")
+        note("exports do not survive a new terminal; both must be set in the shell you run from.")
         note("use an API/agent wallet, which cannot withdraw. Never the master key.")
         return None
 
