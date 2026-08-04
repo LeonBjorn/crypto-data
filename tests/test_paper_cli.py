@@ -235,6 +235,16 @@ class TestTheCommand:
         run(project.args("--json", str(target)))
         assert json.loads(target.read_text(encoding="utf-8"))["config"]["hold"] == 24
 
+    def test_a_second_paper_run_refuses_to_race_the_ledger(self, project, capsys):
+        """Atomic replacement is not enough if two runs both loaded one cursor.
+
+        Holding the first lock here models an already-running launchd or manual
+        invocation; the second command must stop before reading or writing state.
+        """
+        with state_module.exclusive_lock(project.state_path):
+            assert run(project.args()) == 1
+        assert "another paper run" in capsys.readouterr().err
+
     def test_it_actually_trades_on_this_fixture(self, project):
         """A run that quietly takes no trades would pass every other test here."""
         run(project.args())
@@ -303,6 +313,12 @@ class TestTheStateFile:
     def test_no_temporary_file_is_left_behind(self, tmp_path):
         path = tmp_path / "s.json"
         state_module.save(path, {"cursor": 1})
+        assert not path.with_name(path.name + ".tmp").exists()
+
+    def test_a_general_json_document_is_published_atomically(self, tmp_path):
+        path = tmp_path / "snapshot.json"
+        state_module.save_json(path, {"complete": True})
+        assert json.loads(path.read_text(encoding="utf-8")) == {"complete": True}
         assert not path.with_name(path.name + ".tmp").exists()
 
     def test_the_fingerprint_ignores_settings_that_do_not_change_a_trade(self):

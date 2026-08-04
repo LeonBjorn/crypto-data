@@ -31,15 +31,20 @@ resume over a port number would just teach everyone to pass --reset by reflex.
 
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
+
+import fcntl
 
 __all__ = [
     "MAX_REJECTIONS_KEPT",
     "STATE_VERSION",
     "StateError",
+    "exclusive_lock",
     "fingerprint",
     "load",
     "save",
+    "save_json",
 ]
 
 # Bumped when the shape of the file changes incompatibly. A state file from an
@@ -96,6 +101,37 @@ class StateError(Exception):
     """Raised when saved state cannot be used as it stands."""
 
 
+@contextmanager
+def exclusive_lock(path):
+    """Hold the per-ledger lock for one complete paper run.
+
+    An atomic rename prevents a torn state file. It does not serialize two
+    processes that both load the same state, advance independently, and then
+    each atomically replace it. The latter writer would silently discard the
+    former's work. The lock deliberately spans load, advance, backup, and save
+    in ``paper.cli`` so manual runs and launchd cannot race the forward record.
+
+    The lock file remains after a crash, but ``flock`` is released by the kernel
+    with its process, so its presence is not itself a stop signal.
+    """
+    path = Path(path)
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(lock_path, "a+", encoding="utf-8") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise StateError(
+                f"another paper run already holds {lock_path}; refusing to run "
+                f"a second writer against the same ledger"
+            ) from None
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def risk_fingerprint(config) -> str:
     """A stable string over the settings that decide size and when to stop."""
     return json.dumps(
@@ -116,8 +152,8 @@ def fingerprint(config) -> str:
     return json.dumps(material, sort_keys=True, default=str)
 
 
-def save(path, payload):
-    """Write the state atomically, replacing whatever was there.
+def save_json(path, payload):
+    """Write JSON atomically, replacing whatever was there.
 
     The temporary file is created beside the target on purpose: os.replace is
     only atomic within one filesystem, so a temp file in /tmp could not be moved
@@ -127,12 +163,9 @@ def save(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_name(path.name + ".tmp")
 
-    body = dict(payload)
-    body["version"] = STATE_VERSION
-
     try:
         with open(temp_path, "w", encoding="utf-8") as handle:
-            json.dump(body, handle, indent=2, default=str)
+            json.dump(payload, handle, indent=2, default=str)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -145,6 +178,13 @@ def save(path, payload):
         raise
 
     return path
+
+
+def save(path, payload):
+    """Write state atomically, attaching its format version first."""
+    body = dict(payload)
+    body["version"] = STATE_VERSION
+    return save_json(path, body)
 
 
 def load(path, *, expect=None):

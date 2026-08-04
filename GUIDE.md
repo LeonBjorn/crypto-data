@@ -9,8 +9,8 @@ evidence says about whether it works, and what it is genuinely useful for.
 
 ## 1. What the project is
 
-Three pieces, each a separate Python package, and the data only ever flows one
-way:
+Three core packages, with one tightly guarded execution adapter, and data only
+ever flows one way:
 
 ```
     the exchange
@@ -32,16 +32,20 @@ way:
          │
          ▼
     dashboard (read-only, localhost)
+         │
+         ▼
+  Hyperliquid broker (explicit, testnet + dry-run defaults)       MILESTONE 4
 ```
 
 The direction matters. `collector` records what the exchange said, which is
 fact. `signals` and `paper` record what we think it means, which is not. Keeping
 them apart means a mistake in the thinking cannot damage two years of candles.
 
-**`collector` is the only code that touches the network, and it holds no
-credentials.** Nothing in this repository can authenticate against an exchange,
-and therefore nothing in it can place an order. That is a design property, not
-an omission.
+**`collector` is the only routine networked command, and it holds no
+credentials.** The optional Hyperliquid broker is the sole exception: it reads
+credentials from the environment only, defaults to testnet and dry-run, and
+refuses orders unless its safety gates all pass. The paper workflow itself stays
+keyless and cannot place orders.
 
 Currently stored: **5 symbols × 17,589 hourly candles**, 2024-08-01 to now.
 
@@ -364,15 +368,16 @@ strategy working.
    long-only. This is the strongest argument for a perpetuals venue such as
    Hyperliquid — but it means researching a market model this project has not
    touched yet.
-4. **Only then, execution.** The `Broker` seam already exists: the engine issues
-   intents and reads fills back rather than assuming them, and `side` is
-   explicit so shorts are expressible. A live broker is a new class, not a
-   rewrite.
+4. **Only then, execution.** The `Broker` seam and a guarded Hyperliquid
+   implementation already exist: the engine issues intents and reads fills back
+   rather than assuming them, and `side` is explicit so shorts are expressible.
+   Its testnet proof remains a gate, not permission to use mainnet.
 
 ### If you do eventually go live
 
-The property this codebase defends hardest is that it *cannot* place an order.
-Inverting that is the riskiest change in the project, so the path is staged:
+The property this codebase defends hardest is that ordinary workflows cannot
+place an order. Enabling the guarded broker is still the riskiest operation in
+the project, so the path is staged:
 
 ```
 paper (now) → manual execution → tiny auto size → real size
@@ -397,6 +402,6 @@ reconciliation against the venue's own positions each run.
 | `scripts/hourly.sh` | one scheduled cycle |
 | `data/` `logs/` `state/` | generated, not committed |
 
-**1,053 tests**, no network access in the suite. The load-bearing one: replaying
-stored candles through the paper engine one at a time reproduces the backtest
-*exactly*. If that ever fails, paper results cannot be compared to anything.
+The test suite has no network access. The load-bearing one: replaying stored
+candles through the paper engine one at a time reproduces the backtest *exactly*.
+If that ever fails, paper results cannot be compared to anything.
