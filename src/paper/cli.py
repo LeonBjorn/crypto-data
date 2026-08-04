@@ -239,7 +239,7 @@ def _build(config):
     )
 
 
-def _report(portfolio, frames, config, advanced):
+def _report(portfolio, frames, config, advanced, forward_from=None):
     """What the run did, in the shape a person reads rather than a machine."""
     ledger = portfolio.ledger()
     equity = portfolio.equity(frames)
@@ -263,6 +263,16 @@ def _report(portfolio, frames, config, advanced):
     if len(ledger):
         shortfall = expected_shortfall(ledger["net_return"].tolist(), 0.95)
         lines.append(f"  ES(95%)     {shortfall * 100:>11.2f}% average loss in the worst 5% of trades")
+
+    if forward_from:
+        days = (portfolio.cursor - forward_from) / 86_400_000 if portfolio.cursor else 0
+        ahead = ledger[ledger["entry_time"] > forward_from] if len(ledger) else ledger
+        lines += [
+            "",
+            f"  FORWARD RECORD (the only part that is evidence of anything)",
+            f"    since     {to_utc_string(forward_from)}  ({days:.1f} days)",
+            f"    trades    {len(ahead)}   everything else above is a replay of history",
+        ]
 
     if portfolio.risk is not None:
         lines.append(f"  risk        {portfolio.risk.describe()}")
@@ -371,7 +381,7 @@ def _benchmark(frames, config, capital, points=400):
     }
 
 
-def _snapshot(portfolio, frames, config):
+def _snapshot(portfolio, frames, config, forward_from=None):
     """The dashboard's view of the world, as plain data.
 
     Written every run so that the page has something to read whether or not
@@ -420,8 +430,25 @@ def _snapshot(portfolio, frames, config):
     step = timeframe_to_ms(config["timeframe"])
     hold_ms = config["hold"] * step
 
+    forward = (
+        ledger[ledger["entry_time"] > forward_from] if forward_from and len(ledger)
+        else ledger.iloc[0:0]
+    )
+    forward_pnl = float((forward["cash_out"] - forward["cash_in"]).sum()) if len(forward) else 0.0
+
     return {
         "generated_at": int(portfolio.cursor or 0),
+        # Reported apart from everything else on purpose. Blending a replay with
+        # a forward record produces one number that is neither.
+        "forward": {
+            "from": forward_from,
+            "from_utc": to_utc_string(forward_from) if forward_from else None,
+            "days": round((portfolio.cursor - forward_from) / 86_400_000, 2) if forward_from and portfolio.cursor else 0,
+            "trades": int(len(forward)),
+            "pnl": round(forward_pnl, 2),
+            "mean_pct": round(float(forward["net_return"].mean()) * 100, 4) if len(forward) else None,
+            "hit_rate": round(float((forward["net_return"] > 0).mean()) * 100, 2) if len(forward) else None,
+        },
         "config": {
             "rule": config["rule"], "hold": config["hold"], "trail": config["trail"],
             "stop": config["stop"], "target": config["target"],
@@ -585,6 +612,16 @@ def _measure(args):
             "settings": {key: config.get(key) for key in state_module.RISK_FINGERPRINTED},
         }]
 
+    # The boundary between replay and forward testing, fixed once and never
+    # moved. Everything before it is history the rules were chosen against, and
+    # is evidence of nothing; everything after it is out-of-sample and is the
+    # only part that can validate anything. Without the mark the two are
+    # indistinguishable in the ledger, and in three months nobody could tell
+    # which trades meant something.
+    forward_from = (saved or {}).get("forward_from")
+    if forward_from is None:
+        forward_from = portfolio.cursor
+
     # A guard switched on over an existing ledger starts its high-water mark at
     # today's equity, not at zero and not at the historical peak. Zero would
     # leave the limit meaningless until the next bar; the historical peak would
@@ -607,17 +644,18 @@ def _measure(args):
         payload["fingerprint"] = mark
         payload["risk_fingerprint"] = risk_mark
         payload["risk_regimes"] = regimes
+        payload["forward_from"] = forward_from
         payload["config"] = config
         state_module.save(print_target, payload)
 
-    snapshot = _snapshot(portfolio, frames, config)
+    snapshot = _snapshot(portfolio, frames, config, forward_from)
     snapshot_path = Path(args.json) if args.json else print_target.with_name("snapshot.json")
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     with open(snapshot_path, "w", encoding="utf-8") as handle:
         json.dump(snapshot, handle, indent=2, default=str)
         handle.write("\n")
 
-    print(_report(portfolio, frames, config, advanced))
+    print(_report(portfolio, frames, config, advanced, forward_from))
     print()
     print(f"  state    {print_target}")
     print(f"  snapshot {snapshot_path}")

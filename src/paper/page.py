@@ -161,6 +161,9 @@ PAGE = """<!doctype html>
 <div id="halted" style="display:none;background:#2a1416;border:1px solid #ff5f56;
   border-radius:6px;padding:10px 14px;color:#ff8b85;font-size:12px"></div>
 
+<div id="forward" style="background:#101a24;border:1px solid #1e3a52;border-left:3px solid var(--accent);
+  border-radius:6px;padding:9px 14px;font-size:11.5px;color:var(--dim)"></div>
+
 <div class="strip" id="strip"></div>
 
 <div class="view" id="v-overview">
@@ -384,6 +387,25 @@ function render(s){
         ARROW(s.return_pct-s.benchmark.return_pct)+" "+P(s.return_pct-s.benchmark.return_pct),
         C(s.return_pct-s.benchmark.return_pct)]]:[]),
   ].map(([k,v,c])=>`<div class="cell"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join("");
+
+  // The distinction the whole account rests on. Everything before the mark is a
+  // replay of the history the rules were chosen against and proves nothing; the
+  // part after it is the only out-of-sample evidence there is. Kept at the top
+  // and never blended into the headline numbers.
+  const fw=s.forward;
+  if(fw){
+    const el=document.getElementById("forward");
+    el.innerHTML = fw.trades>0
+      ? `<b style="color:var(--fg)">forward record</b> — ${fw.days.toFixed(0)} day(s) since ${fw.from_utc}: `
+        +`<b style="color:var(--fg)">${fw.trades}</b> trade(s), `
+        +`<span class="${C(fw.pnl)}">${MS(fw.pnl)}</span>`
+        +(fw.hit_rate!=null?`, ${fw.hit_rate.toFixed(0)}% hit`:"")
+        +` &nbsp;·&nbsp; everything above includes a replay of history and is not evidence`
+      : `<b style="color:var(--fg)">forward record starts ${fw.from_utc}</b> — `
+        +`${fw.days.toFixed(1)} days, ${fw.trades} trades so far. `
+        +`The ${s.stats.closed} trades in the numbers below are a <b>replay</b> of the history `
+        +`the rules were chosen against, and are not out-of-sample evidence.`;
+  }
 
   chart(s);
 
