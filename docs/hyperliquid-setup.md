@@ -55,8 +55,13 @@ only one that sends anything, is opt-in, and is testnet-only.
 
 ```
 read -rs HYPERLIQUID_PRIVATE_KEY && export HYPERLIQUID_PRIVATE_KEY
-export HYPERLIQUID_WALLET_ADDRESS=0xYourAccountAddress
+export HYPERLIQUID_WALLET_ADDRESS=<paste your 0x… account address here>
 ```
+
+The second line will not run as written -- that is deliberate. A placeholder
+that looks like a working command gets pasted as one, and `0xYourAccountAddress`
+is a plausible-looking twenty characters that the venue would have rejected with
+an unhelpful 422 before the format check existed.
 
 **Watch for trailing whitespace.** A newline or space on the address makes the
 venue answer every read with `422 Unprocessable Entity: failed to deserialize
