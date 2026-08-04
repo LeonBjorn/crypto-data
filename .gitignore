@@ -34,3 +34,8 @@ __pycache__/
 # .vscode/         The debug and test settings that make the project work in the
 #                  editor. Committing them means a fresh checkout works without
 #                  reconstructing them from memory.
+
+# Backups of the paper ledger. Generated, machine-specific, and large enough to
+# be noise in a diff -- but note they are the only copies that exist, so the
+# directory matters even though its contents are not committed.
+state/backups/

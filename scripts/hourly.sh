@@ -58,6 +58,24 @@ rotate "$LOG"
 rotate "$PROJECT/logs/launchd.out.log"
 rotate "$PROJECT/logs/launchd.err.log"
 
+# How long since the previous cycle, from the heartbeat the paper run writes.
+# An hourly job should never be much above 1.0; past 2 a cycle was missed, and
+# the forward record has a hole unless the catch-up below fills it.
+if [ -f "$PROJECT/state/heartbeat.json" ]; then
+  gap=$(python3 -c "
+import json,time
+try:
+    b=json.load(open('$PROJECT/state/heartbeat.json'))
+    print(f\"{(time.time()*1000-b['at'])/3600000:.1f}\")
+except Exception:
+    print('?')
+" 2>/dev/null)
+  case "$gap" in
+    ?|"") ;;
+    *) awk -v g="$gap" 'BEGIN{exit !(g>2)}' 2>/dev/null &&        say "WARNING: ${gap}h since the last cycle -- the schedule may have stopped" ;;
+  esac
+fi
+
 say "cycle start"
 
 # --- fetch -----------------------------------------------------------------

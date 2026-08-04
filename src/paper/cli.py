@@ -39,6 +39,7 @@ from pathlib import Path
 from collector import settings
 from collector.store import StoreError
 from collector.timeframes import TimeframeError, timeframe_to_ms, to_utc_string
+from paper import backup as backup_module
 from paper import state as state_module
 from paper.account import Account, AccountError
 from paper.risk import DrawdownGuard, RiskError, RiskModel, expected_shortfall
@@ -384,7 +385,7 @@ def _benchmark(frames, config, capital, points=400):
     }
 
 
-def _snapshot(portfolio, frames, config, forward_from=None):
+def _snapshot(portfolio, frames, config, forward_from=None, state_path=None):
     """The dashboard's view of the world, as plain data.
 
     Written every run so that the page has something to read whether or not
@@ -506,6 +507,14 @@ def _snapshot(portfolio, frames, config, forward_from=None):
         "pnl_realised": round(running - capital, 2),
         "pnl_unrealised": round(equity - running, 2),
         "quote": "USDT",
+        # The schedule's own pulse. A job that stops running is the failure this
+        # project is least able to notice -- everything downstream keeps working
+        # and the ledger simply stops growing -- so the gap is surfaced as a
+        # number rather than left to be inferred from an absence.
+        "heartbeat": {
+            "hours_since": backup_module.hours_since(Path(state_path).parent) if state_path else None,
+            "last": (backup_module.read_heartbeat(Path(state_path).parent) or {}).get("at") if state_path else None,
+        },
         "stats": {
             "closed": int(len(ledger)),
             "hit_rate": round(float((ledger["net_return"] > 0).mean()) * 100, 2) if len(ledger) else None,
@@ -668,9 +677,19 @@ def _measure(args):
         payload["risk_regimes"] = regimes
         payload["forward_from"] = forward_from
         payload["config"] = config
+        # Copied aside before the save, so the copy is of the last state known
+        # to be complete rather than of one written half a second ago.
+        backup_module.keep(print_target)
         state_module.save(print_target, payload)
+        beat = backup_module.write_heartbeat(print_target.parent, cycle=advanced)
+        if beat.get("gap_hours") and beat["gap_hours"] > 2:
+            print(
+                f"note: {beat['gap_hours']:.1f} hours since the last cycle. The "
+                f"schedule may have stopped; the forward record has a gap of that "
+                f"size unless the catch-up above filled it."
+            )
 
-    snapshot = _snapshot(portfolio, frames, config, forward_from)
+    snapshot = _snapshot(portfolio, frames, config, forward_from, print_target)
     snapshot_path = Path(args.json) if args.json else print_target.with_name("snapshot.json")
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     with open(snapshot_path, "w", encoding="utf-8") as handle:

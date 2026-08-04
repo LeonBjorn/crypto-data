@@ -392,6 +392,18 @@ function render(s){
   // replay of the history the rules were chosen against and proves nothing; the
   // part after it is the only out-of-sample evidence there is. Kept at the top
   // and never blended into the headline numbers.
+  // A stopped schedule is invisible by nature: the page keeps rendering, the
+  // ledger just stops growing. Shown as a number so it cannot be missed.
+  const hb=s.heartbeat;
+  if(hb && hb.hours_since!=null && hb.hours_since>2){
+    const el=document.getElementById("halted");
+    el.style.display="block";
+    el.innerHTML="<b>SCHEDULE STALLED</b> &nbsp; "+hb.hours_since.toFixed(1)
+      +" hours since the last cycle. The hourly job may have stopped — "
+      +"check <code>launchctl list | grep crypto</code>. The forward record has a "
+      +"gap of that size unless a catch-up run fills it.";
+  }
+
   const fw=s.forward;
   if(fw){
     const el=document.getElementById("forward");
