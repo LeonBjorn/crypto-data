@@ -146,6 +146,9 @@ PAGE = """<!doctype html>
   </div>
 </div>
 
+<div id="halted" style="display:none;background:#2a1416;border:1px solid #ff5f56;
+  border-radius:6px;padding:10px 14px;color:#ff8b85;font-size:12px"></div>
+
 <div class="strip" id="strip"></div>
 
 <div class="cols">
@@ -311,6 +314,16 @@ function render(s){
     +(ui.symbol?"  ▸ filtered to "+ui.symbol:"");
 
   const st=s.stats, rk=s.risk;
+
+  // Halted is not a statistic, it is a state change: no new positions are being
+  // opened at all. Anything less than a banner would let it be scrolled past.
+  const halt=document.getElementById("halted");
+  if(rk.drawdown_tripped){
+    halt.style.display="block";
+    halt.innerHTML="<b>HALTED</b> &nbsp; the "+rk.drawdown_limit_pct.toFixed(0)
+      +"% drawdown limit has tripped — no new positions are being opened. "
+      +"Open positions still run to their exits. Resuming is a manual decision.";
+  } else { halt.style.display="none"; }
   document.getElementById("strip").innerHTML=[
     ["equity",N(s.equity),C(s.return_pct)],
     ["return",ARROW(s.return_pct)+" "+P(s.return_pct),C(s.return_pct)],
@@ -320,6 +333,10 @@ function render(s){
     ["open",s.open_positions.length+" · "+N(s.open_value,0),""],
     ["closed",st.closed,""],
     ["refused",N(st.refused,0),"dim"],
+    ...(rk.drawdown_limit_pct!=null?[["dd limit",
+        rk.drawdown_tripped?"TRIPPED"
+          :P(rk.guard_drawdown_pct)+" / −"+rk.drawdown_limit_pct.toFixed(0)+"%",
+        rk.drawdown_tripped?"down":"dim"]]:[]),
     ...(s.benchmark?[["vs hold "+s.benchmark.symbol,
         ARROW(s.return_pct-s.benchmark.return_pct)+" "+P(s.return_pct-s.benchmark.return_pct),
         C(s.return_pct-s.benchmark.return_pct)]]:[]),
@@ -334,6 +351,15 @@ function render(s){
     <tr><td class="dim">unrealised</td><td class="${C(s.equity_now?s.equity_now.unrealised:0)}">${s.equity_now?N(s.equity_now.unrealised):"–"}</td></tr>
     ${s.benchmark?`<tr><td class="dim">hold ${s.benchmark.symbol}</td><td class="${C(s.benchmark.return_pct)}">${P(s.benchmark.return_pct)}</td></tr>
     <tr><td class="dim">its max drawdown</td><td class="down">${P(s.benchmark.max_drawdown_pct)}</td></tr>`:""}
+    ${rk.drawdown_limit_pct!=null?`<tr><td class="dim">drawdown limit</td>
+      <td class="${rk.drawdown_tripped?"down":"dim"}">${rk.drawdown_tripped?"TRIPPED":P(rk.guard_drawdown_pct)+" of −"+rk.drawdown_limit_pct.toFixed(0)+"%"}</td></tr>`:""}
+    ${rk.guard_peak!=null?`<tr><td class="dim">limit measured from</td><td>${N(rk.guard_peak)}</td></tr>`:""}
+    ${rk.expected_shortfall_95!=null?`<tr><td class="dim">ES (95%)</td>
+      <td class="down">−${rk.expected_shortfall_95.toFixed(2)}%</td></tr>`:""}
+    ${rk.sizing?`<tr><td class="dim">sizing</td><td class="dim">${rk.sizing}</td></tr>`:""}
+    ${rk.forecast_vol_pct!=null?`<tr><td class="dim">forecast vol</td>
+      <td>${rk.forecast_vol_pct.toFixed(0)}%${rk.target_vol_pct!=null?" → "+rk.target_vol_pct.toFixed(0)+"%":""}</td></tr>`:""}
+    ${rk.scale!=null?`<tr><td class="dim">book scale</td><td>${rk.scale.toFixed(2)}×</td></tr>`:""}
     <tr><td class="dim">hit rate</td><td>${st.hit_rate==null?"–":st.hit_rate.toFixed(1)+"%"}</td></tr>
     <tr><td class="dim">mean / trade</td><td class="${C(st.mean_net_pct)}">${P(st.mean_net_pct)}</td></tr>
     <tr><td class="dim">best / worst</td><td><span class="up">${P(st.best_pct)}</span> <span class="dim">/</span> <span class="down">${P(st.worst_pct)}</span></td></tr>`;

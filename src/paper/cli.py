@@ -483,6 +483,14 @@ def _snapshot(portfolio, frames, config):
                 else round(portfolio.risk.portfolio_vol() * 100, 2)
             ),
             "drawdown_limit_pct": None if portfolio.guard is None else round(portfolio.guard.limit * 100, 1),
+            # The guard's own drawdown, which is NOT the one above it. That one
+            # is measured from the all-time realised peak; this is measured from
+            # the high-water mark the limit was armed with. When a limit is
+            # enabled forward-only the two are different numbers describing
+            # different things, and showing the historical one next to the limit
+            # would read as "already far past it, yet not tripped".
+            "guard_drawdown_pct": None if portfolio.guard is None else round(portfolio.guard.drawdown * 100, 2),
+            "guard_peak": None if portfolio.guard is None else round(portfolio.guard.peak, 2),
             "drawdown_tripped": None if portfolio.guard is None else portfolio.guard.tripped,
             "peak": round(peak, 2),
             "max_drawdown_pct": round(max_drawdown * 100, 2),

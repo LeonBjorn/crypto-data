@@ -610,3 +610,52 @@ class TestTheRiskRegimeBoundary:
         self.enable_guard(project)
         run(project.args())
         assert "25% limit" in capsys.readouterr().out
+
+
+class TestTheDrawdownLimitIsLegibleOnThePage:
+    """The limit is compared against its own high-water mark, not the record.
+
+    These are two different numbers once a limit is armed forward-only, and
+    showing the historical one beside the limit reads as "already far past it,
+    and yet not tripped" -- which is worse than showing nothing, because it
+    invites the reader to distrust the limit rather than the label.
+    """
+
+    def enable(self, project, limit=0.25):
+        import json as _json
+        config = _json.loads(project.config_path.read_text(encoding="utf-8"))
+        config["max_drawdown"] = limit
+        project.config_path.write_text(_json.dumps(config), encoding="utf-8")
+
+    def test_the_guard_drawdown_is_reported_separately_from_the_record(self, project):
+        run(project.args())
+        self.enable(project)
+        run(project.args())
+        risk = project.snapshot()["risk"]
+        assert risk["guard_drawdown_pct"] is not None
+        assert risk["guard_peak"] is not None
+        # The historical figure is still there and still means what it meant.
+        assert risk["max_drawdown_pct"] <= 0
+
+    def test_a_freshly_armed_limit_reads_as_zero_not_as_the_old_drawdown(self, project):
+        run(project.args())
+        self.enable(project)
+        run(project.args())
+        risk = project.snapshot()["risk"]
+        assert risk["guard_drawdown_pct"] == pytest.approx(0.0, abs=1e-6)
+        assert risk["drawdown_tripped"] is False
+
+    def test_the_page_reads_the_guard_figure_and_not_the_record(self):
+        from paper.page import PAGE
+        script = PAGE[PAGE.index("<script>"):PAGE.index("</script>")]
+        cell = script[script.index('"dd limit"'):script.index('"dd limit"') + 400]
+        assert "guard_drawdown_pct" in cell
+        assert "current_drawdown_pct" not in cell
+
+    def test_a_tripped_limit_gets_a_banner_not_a_table_row(self):
+        """It is a state change -- no new positions are being opened at all --
+        and anything less than a banner can be scrolled past.
+        """
+        from paper.page import PAGE
+        assert 'id="halted"' in PAGE
+        assert "HALTED" in PAGE
