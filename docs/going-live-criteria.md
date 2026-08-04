@@ -39,6 +39,17 @@ All five. Not most.
    configurations have been evaluated against this data. A Sharpe that does not
    survive correction for that is not a finding. See Bailey & López de Prado.
 
+   Now computable, so this is no longer a judgement call:
+
+   ```python
+   from signals.validation import deflated_sharpe
+   deflated_sharpe([t["net_return"] for t in ledger], trials=40)
+   ```
+
+   **Measured on the current ledger: 0.039.** The bar is 0.95. It is not close,
+   and it is not close even at a single trial (0.667) -- the trial count is not
+   what is failing this, the strategy is.
+
 4. **The broker proven on testnet**: trade-only API keys with withdrawals
    disabled, hard caps on order size and total exposure, an allowed-symbol list,
    a kill-switch file, and reconciliation against the venue's own positions on
