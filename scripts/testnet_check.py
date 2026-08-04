@@ -208,9 +208,26 @@ def stage_authenticated(price):
         max_order_notional=25.0, max_total_exposure=100.0,
     )
     balances = broker.balances()
-    ok(f"balances read: {balances.get('total') or balances}")
+    total = balances.get("total") or balances
+    ok(f"balances read: {total}")
     ok(f"positions read: {broker.positions() or 'flat'}")
     ok(f"exposure: {broker.exposure():,.2f}")
+
+    # A readable but empty account is ambiguous and the two causes need
+    # different fixes, so it is flagged rather than reported as simply fine.
+    funds = 0.0
+    if isinstance(total, dict):
+        funds = float(total.get("USDC") or 0.0)
+    if funds <= 0:
+        bad("the account reads as empty (0 USDC)")
+        note("two things look identical here and need different fixes:")
+        note("  1. no testnet funds yet -- claim them at app.hyperliquid-testnet.xyz")
+        note(f"  2. {ADDRESS_ENV} is the agent wallet's address rather than the")
+        note("     account's. An agent has its own address; reads against it")
+        note("     succeed and return an empty account, exactly as above.")
+        note("stage 7 would fail on margin until this is resolved.")
+    else:
+        ok(f"{funds:,.2f} USDC available -- enough to place the stage 7 order")
     return broker
 
 
@@ -222,6 +239,16 @@ def stage_order(price, confirm):
         return
     if not os.environ.get(ADDRESS_ENV):
         note("skipped -- no credentials")
+        return
+
+    probe = HyperliquidBroker(
+        network="testnet", dry_run=True,
+        allowed_symbols={TESTNET_SYMBOL}, max_order_notional=25.0,
+    )
+    available = float((probe.balances().get("total") or {}).get("USDC") or 0.0)
+    if available <= 0:
+        bad("refusing to send: the account has no testnet funds")
+        note("this would fail on margin. See stage 6 for the two possible causes.")
         return
 
     broker = HyperliquidBroker(
