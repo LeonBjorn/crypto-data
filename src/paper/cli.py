@@ -531,8 +531,42 @@ def _measure(args):
     portfolio = _build(config)
 
     mark = state_module.fingerprint(config)
+    risk_mark = state_module.risk_fingerprint(config)
     saved = None if args.reset else state_module.load(print_target, expect=mark)
     portfolio.restore(saved, frames)
+
+    # A change to the risk settings is adopted rather than refused, and the
+    # moment of the change is written into the ledger's own record so that a
+    # curve spanning two regimes says so instead of quietly averaging them.
+    regimes = list((saved or {}).get("risk_regimes") or [])
+    if saved is not None and saved.get("risk_fingerprint") not in (None, risk_mark):
+        regimes.append({
+            "at": portfolio.cursor,
+            "at_utc": to_utc_string(portfolio.cursor) if portfolio.cursor else None,
+            "settings": {key: config.get(key) for key in state_module.RISK_FINGERPRINTED},
+        })
+        print(
+            f"note: risk settings changed. Adopting them from "
+            f"{to_utc_string(portfolio.cursor) if portfolio.cursor else 'the start'} onward; "
+            f"the {len(portfolio.ledger())} trade(s) already recorded were taken under the "
+            f"previous settings and are kept."
+        )
+    elif not regimes:
+        regimes = [{
+            "at": portfolio.cursor,
+            "at_utc": to_utc_string(portfolio.cursor) if portfolio.cursor else None,
+            "settings": {key: config.get(key) for key in state_module.RISK_FINGERPRINTED},
+        }]
+
+    # A guard switched on over an existing ledger starts its high-water mark at
+    # today's equity, not at zero and not at the historical peak. Zero would
+    # leave the limit meaningless until the next bar; the historical peak would
+    # apply the limit retroactively to a drawdown that already happened and was
+    # lived through, which retires the account rather than protecting it. Where
+    # the mark starts is a real choice, so it is made here explicitly and
+    # recorded in risk_regimes rather than falling out of an initial value.
+    if portfolio.guard is not None and portfolio.guard.peak <= 0:
+        portfolio.guard.observe(portfolio.equity(frames))
 
     signals = {
         symbol: rules.apply(config["rule"], frame, **config["params"])
@@ -544,6 +578,8 @@ def _measure(args):
     if not args.status:
         payload = portfolio.to_state()
         payload["fingerprint"] = mark
+        payload["risk_fingerprint"] = risk_mark
+        payload["risk_regimes"] = regimes
         payload["config"] = config
         state_module.save(print_target, payload)
 

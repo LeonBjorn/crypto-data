@@ -53,8 +53,20 @@ STATE_VERSION = 1
 # the number that actually matters when reading a ledger.
 MAX_REJECTIONS_KEPT = 200
 
-# The settings that define what a trade would have been. Anything not in here
-# can change without invalidating a ledger.
+# Two fingerprints, because two different things can change and they deserve
+# different answers.
+#
+# STRATEGY settings define what a trade *would have been*. Changing the rule or
+# the hold and then resuming would append trades taken under new rules to a
+# ledger built under old ones -- one equity curve describing two strategies.
+# That is refused.
+#
+# RISK settings define how much is traded and when to stop. Changing those on a
+# running account is a legitimate operational act, not a mistake: a risk control
+# you may never adjust without destroying your track record is a risk control
+# nobody will turn on. So a risk change is *adopted*, and recorded in the state
+# with the moment it happened, and the curve is honestly marked as spanning more
+# than one regime rather than being silently thrown away or silently mixed.
 FINGERPRINTED = (
     "exchange",
     "timeframe",
@@ -72,9 +84,23 @@ FINGERPRINTED = (
     "costs",
 )
 
+RISK_FINGERPRINTED = (
+    "sizing",
+    "target_vol",
+    "max_leverage",
+    "max_drawdown",
+)
+
 
 class StateError(Exception):
     """Raised when saved state cannot be used as it stands."""
+
+
+def risk_fingerprint(config) -> str:
+    """A stable string over the settings that decide size and when to stop."""
+    return json.dumps(
+        {key: config.get(key) for key in RISK_FINGERPRINTED}, sort_keys=True, default=str
+    )
 
 
 def fingerprint(config) -> str:

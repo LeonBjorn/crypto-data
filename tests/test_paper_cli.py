@@ -29,6 +29,7 @@ import pytest
 from collector import store
 from paper import state as state_module
 from paper.account import Account
+from paper.risk import DrawdownGuard
 from paper.cli import build_parser, load_config, run
 from paper.portfolio import Portfolio, PortfolioError
 from paper.server import Handler, serve
@@ -532,3 +533,80 @@ class TestThePageAndTheSnapshotAgree:
         source = self.page_source()
         for opener, closer in (("{", "}"), ("(", ")"), ("[", "]")):
             assert source.count(opener) == source.count(closer), f"unbalanced {opener}{closer}"
+
+
+class TestTheRiskRegimeBoundary:
+    """Changing a risk control must neither destroy the ledger nor hide itself.
+
+    Two failure modes sit either side of this. Refusing to resume would mean a
+    risk limit can only ever be enabled by throwing away the track record, which
+    guarantees nobody turns one on. Silently adopting it would produce one equity
+    curve spanning two risk regimes with nothing saying so. The answer is to
+    adopt and record.
+    """
+
+    def enable_guard(self, project, limit=0.25):
+        import json as _json
+        config = _json.loads(project.config_path.read_text(encoding="utf-8"))
+        config["max_drawdown"] = limit
+        project.config_path.write_text(_json.dumps(config), encoding="utf-8")
+
+    def test_changing_a_risk_setting_keeps_the_ledger(self, project):
+        run(project.args())
+        before = len(project.state()["ledger"])
+        assert before > 0
+
+        self.enable_guard(project)
+        assert run(project.args()) == 0
+        assert len(project.state()["ledger"]) == before
+
+    def test_and_records_when_the_regime_changed(self, project):
+        run(project.args())
+        self.enable_guard(project)
+        run(project.args())
+        regimes = project.state()["risk_regimes"]
+        assert regimes[-1]["settings"]["max_drawdown"] == 0.25
+        assert regimes[-1]["at"] is not None
+
+    def test_changing_the_strategy_still_refuses(self, project, capsys):
+        """The distinction being drawn. A different rule is a different
+        strategy; a different drawdown limit is the same strategy run more
+        carefully from a point in time.
+        """
+        run(project.args())
+        project.write_config(rule="breakout")
+        assert run(project.args()) == 1
+        assert "different settings" in capsys.readouterr().err
+
+    def test_the_high_water_mark_starts_from_today_not_from_the_peak(self, project):
+        """Forward-only. Seeding at the historical peak would apply the limit
+        retroactively to a drawdown already lived through, which retires an
+        account rather than protecting it.
+        """
+        run(project.args())
+        equity = project.snapshot()["equity"]
+
+        self.enable_guard(project)
+        run(project.args())
+        guard = project.state()["guard"]
+        assert guard["peak"] == pytest.approx(equity, rel=0.05)
+        assert not guard["tripped"]
+
+    def test_a_tripped_guard_stops_new_positions(self):
+        """Tested against the account directly rather than through a run.
+
+        A guard enabled over an existing ledger seeds its mark at today's equity
+        and only observes again when a new bar arrives, so a resumed run with no
+        new candles cannot trip however tight the limit -- which is correct, and
+        makes the CLI the wrong place to assert this.
+        """
+        account = Account(10_000, guard=DrawdownGuard(limit=0.25))
+        account.guard.observe(10_000)
+        account.guard.observe(1_000)
+        assert "drawdown limit" in account.refusal("BTC/USDT")
+
+    def test_the_report_shows_the_limit(self, project, capsys):
+        run(project.args())
+        self.enable_guard(project)
+        run(project.args())
+        assert "25% limit" in capsys.readouterr().out
