@@ -1,5 +1,18 @@
 # Scheduling
 
+Two launchd agents. The **hourly** one runs a cycle and exits; the **dashboard**
+one stays up and serves the page.
+
+| agent | what it does |
+|-------|--------------|
+| `com.leonselvig.crypto-data.hourly`    | `collect` then `paper`, at :02 past each hour |
+| `com.leonselvig.crypto-data.dashboard` | serves http://127.0.0.1:8787, always on |
+
+The dashboard is a server rather than a job, so it is `KeepAlive` instead of
+scheduled: launchd restarts it if it dies and starts it at login. A dashboard
+that quietly died three weeks ago is the same failure as one showing stale
+numbers -- you find out when you go looking, which is exactly when you wanted it.
+
 `hourly.sh` runs one cycle: `collect` to fetch whatever candles have closed,
 then `paper` to advance the account over them. That order matters -- `paper`
 only ever reads the store, so fetching second would advance over stale candles.
@@ -12,7 +25,9 @@ the candles already stored is both correct and idempotent.
 
 ```
 cp scripts/com.leonselvig.crypto-data.hourly.plist ~/Library/LaunchAgents/
+cp scripts/com.leonselvig.crypto-data.dashboard.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.leonselvig.crypto-data.hourly.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.leonselvig.crypto-data.dashboard.plist
 ```
 
 It fires at two minutes past every hour, and once at login so a machine that was
@@ -47,7 +62,8 @@ launchctl kickstart gui/$(id -u)/com.leonselvig.crypto-data.hourly   # run it no
 
 ```
 launchctl bootout gui/$(id -u)/com.leonselvig.crypto-data.hourly
-rm ~/Library/LaunchAgents/com.leonselvig.crypto-data.hourly.plist
+launchctl bootout gui/$(id -u)/com.leonselvig.crypto-data.dashboard
+rm ~/Library/LaunchAgents/com.leonselvig.crypto-data.{hourly,dashboard}.plist
 ```
 
 Nothing else needs undoing: the job only writes to `data/`, `logs/` and

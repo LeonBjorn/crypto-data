@@ -194,9 +194,10 @@ negative.
 
 ### The dashboard
 
-```bash
-uv run paper-serve        # http://127.0.0.1:8787
-```
+The dashboard runs as its own launchd agent, so it is already listening at
+**http://127.0.0.1:8787** whenever the machine is on -- there is nothing to
+start. `uv run paper-serve` runs one in the foreground if you want a second copy
+on another port.
 
 Read-only, binds to localhost, has no route that changes anything, holds no
 credentials. It re-reads the snapshot every 15 seconds.

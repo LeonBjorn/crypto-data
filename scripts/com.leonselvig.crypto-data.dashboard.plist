@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.leonselvig.crypto-data.dashboard</string>
+
+  <!-- Unlike the hourly job, this one stays up. It is a server, so it is not
+       "run and exit" but "be listening whenever the machine is on". -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/leonselvigbjornaraa/.local/bin/uv</string>
+    <string>run</string>
+    <string>paper-serve</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>8787</string>
+    <string>--snapshot</string>
+    <string>/Users/leonselvigbjornaraa/crypto-data/state/snapshot.json</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/leonselvigbjornaraa/crypto-data</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Bring it back if it ever exits. A dashboard that quietly died three weeks
+       ago and shows nothing is the same failure as one showing stale numbers:
+       you find out when you go looking, which is exactly when you wanted it. -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Wait ten seconds before restarting, so a genuine misconfiguration (a port
+       already taken, say) fails slowly and legibly in the log instead of
+       spinning hundreds of times a minute. -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/leonselvigbjornaraa/crypto-data/logs/dashboard.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/leonselvigbjornaraa/crypto-data/logs/dashboard.err.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
