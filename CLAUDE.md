@@ -16,7 +16,7 @@ which defaults to testnet and to sending nothing.** Everything else is keyless.
 
 ```bash
 uv sync                                  # install (first time, or after dep changes)
-uv run pytest                            # 1174 tests, no network, ~20s
+uv run pytest                            # full suite, no network, ~20s
 uv run pytest tests/test_trades.py       # one file
 uv run pytest -k drawdown                # by keyword
 
@@ -114,7 +114,8 @@ above was made exactly that way, and nothing about it looked wrong.
 
 ## Paper account state
 
-- `state/` is **gitignored and has no backup**. The ledger cannot be refetched.
+- `state/` is **gitignored and has no off-machine backup**. Local rollback
+  copies exist, but the ledger still cannot be refetched.
 - `forward_from` in `state/paper.json` marks where **replay ends and genuine
   out-of-sample testing begins** (2026-08-04). Everything before it is history
   the rules were selected against and is evidence of nothing. The dashboard says

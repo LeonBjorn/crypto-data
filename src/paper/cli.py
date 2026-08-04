@@ -593,6 +593,16 @@ def _measure(args):
     config = load_config(args.config)
     print_target = Path(args.state)
 
+    # Atomic writes alone do not prevent two invocations from each loading the
+    # same cursor and then racing to replace the ledger. The lock covers the
+    # complete transaction, including the backup of the last known-good state.
+    with state_module.exclusive_lock(print_target):
+        return _measure_locked(args, config, print_target)
+
+
+def _measure_locked(args, config, print_target):
+    """Advance and publish one account while its ledger lock is held."""
+
     frames = _load_frames(config, args.data_dir)
     portfolio = _build(config)
 
@@ -632,8 +642,9 @@ def _measure(args):
     # which trades meant something.
     # --reset on an account that has begun forward testing throws away the only
     # evidence the project has and restarts a three-month clock, silently. It is
-    # one reflexive command, it is irreversible, and state/ is not committed, so
-    # there is no copy to go back to. It now has to be said twice.
+    # one reflexive command. Local backups offer a rollback path, but are not a
+    # replacement for preserving the forward record, so it now has to be said
+    # twice.
     if args.reset and not args.confirm_reset:
         existing = state_module.load(print_target) if print_target.exists() else None
         began = (existing or {}).get("forward_from")
@@ -691,10 +702,9 @@ def _measure(args):
 
     snapshot = _snapshot(portfolio, frames, config, forward_from, print_target)
     snapshot_path = Path(args.json) if args.json else print_target.with_name("snapshot.json")
-    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(snapshot_path, "w", encoding="utf-8") as handle:
-        json.dump(snapshot, handle, indent=2, default=str)
-        handle.write("\n")
+    # The dashboard may be reading while this command completes. Publish a
+    # complete JSON document or the previous complete document, never a prefix.
+    state_module.save_json(snapshot_path, snapshot)
 
     print(_report(portfolio, frames, config, advanced, forward_from))
     print()
