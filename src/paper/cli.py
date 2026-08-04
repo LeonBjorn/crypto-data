@@ -79,6 +79,11 @@ DEFAULTS = {
     "max_positions": 5,
     "one_per_symbol": True,
     "costs": {"fee": 0.001, "slippage": 0.0005},
+    # What to measure the account against. Buying one asset and doing
+    # nothing is the benchmark every strategy has to clear before any of
+    # its cleverness counts for anything, and it is the one comparison a
+    # dashboard of your own equity curve cannot make for you.
+    "benchmark": "BTC/USDT",
 }
 
 
@@ -231,6 +236,82 @@ def _report(portfolio, frames, config, advanced):
     return "\n".join(lines)
 
 
+def _count_reasons(feed):
+    """How many recent refusals each reason accounts for.
+
+    Only over the kept tail, which is what makes it a shape rather than a total:
+    "mostly already-holding" and "mostly at the cap" call for opposite changes,
+    and the running total alone cannot tell them apart.
+    """
+    counts = {}
+    for entry in feed:
+        counts[entry["reason"]] = counts.get(entry["reason"], 0) + 1
+    return dict(sorted(counts.items(), key=lambda pair: -pair[1]))
+
+
+
+def _benchmark(frames, config, capital, points=400):
+    """Buy the benchmark symbol at the start, hold, and mark it to market.
+
+    The honest yardstick. A strategy that returned twenty percent over two years
+    in which its market doubled did not make money by being clever, and an
+    equity curve on its own cannot say so -- it has nothing to be compared
+    against but itself.
+
+    Anchored at the same instant and the same capital as the account, so the two
+    lines start together and any daylight between them is the strategy rather
+    than a difference in where the axes begin. Sampled down to roughly `points`
+    so the payload stays small however long the history grows; the extremes are
+    computed before sampling, so a peak between two samples still counts.
+    """
+    symbol = config.get("benchmark")
+
+    if symbol == "basket":
+        # Equal money into every symbol the strategy trades, held throughout.
+        # Arguably the fairer yardstick of the two: the account is allowed to
+        # pick among five markets, so comparing it to one of them flatters or
+        # punishes it depending on which one was chosen.
+        usable = [f for f in frames.values() if not f.empty]
+        if not usable:
+            return None
+        length = min(len(f) for f in usable)
+        share = capital / len(usable)
+        values = None
+        for frame in usable:
+            closes = frame["close"].to_numpy(dtype="float64")[:length]
+            held = closes * (share / float(closes[0]))
+            values = held if values is None else values + held
+        times = usable[0]["timestamp"].to_numpy()[:length]
+    else:
+        frame = frames.get(symbol)
+        if frame is None or frame.empty:
+            return None
+        closes = frame["close"].to_numpy(dtype="float64")
+        times = frame["timestamp"].to_numpy()
+        values = closes * (capital / float(closes[0]))
+
+    peak = capital
+    worst = 0.0
+    for value in values:
+        peak = max(peak, float(value))
+        worst = min(worst, float(value) / peak - 1)
+
+    step = max(1, len(values) // points)
+    curve = [
+        {"t": int(times[i]), "equity": round(float(values[i]), 2)}
+        for i in range(0, len(values), step)
+    ]
+    if curve[-1]["t"] != int(times[-1]):
+        curve.append({"t": int(times[-1]), "equity": round(float(values[-1]), 2)})
+
+    return {
+        "symbol": symbol,
+        "curve": curve,
+        "return_pct": round((float(values[-1]) / capital - 1) * 100, 4),
+        "max_drawdown_pct": round(worst * 100, 2),
+    }
+
+
 def _snapshot(portfolio, frames, config):
     """The dashboard's view of the world, as plain data.
 
@@ -333,12 +414,34 @@ def _snapshot(portfolio, frames, config):
         "by_symbol": by_symbol,
         "refusals": {
             "total": portfolio.rejections_total,
-            "recent": portfolio.rejection_feed()[-25:],
+            "recent": portfolio.rejection_feed(),
+            "by_reason": _count_reasons(portfolio.rejection_feed()),
         },
         "timeframe_ms": step,
         "next_candle": (portfolio.cursor + step) if portfolio.cursor else None,
-        "equity_curve": curve,
-        "recent_trades": ledger.tail(50).to_dict(orient="records"),
+        # Prepended with the account's opening value at the first candle, so the
+        # strategy and the benchmark begin at the same point rather than the
+        # strategy appearing to start at its first closed trade weeks later.
+        "equity_curve": (
+            [{"t": int(min(f["timestamp"].iloc[0] for f in frames.values())), "equity": capital}]
+            + curve
+        ),
+        "benchmark": _benchmark(frames, config, capital),
+        # Where the account stands *now*, including positions still open. The
+        # realised curve above necessarily ends at the last closed trade, which
+        # is why a chart of it alone finishes below the equity printed beside it
+        # -- so the gap is handed over as a fact rather than left to be noticed.
+        "equity_now": {
+            "t": portfolio.cursor,
+            "equity": round(equity, 2),
+            "realised": round(running, 2),
+            "unrealised": round(equity - running, 2),
+        },
+        # The whole ledger, not a tail. The page sorts and filters it, and
+        # doing that to the most recent fifty of four hundred rows would look
+        # exactly like doing it to all of them while quietly answering a
+        # different question. It is about 140 KB and never leaves this machine.
+        "trades": ledger.to_dict(orient="records"),
     }
 
 

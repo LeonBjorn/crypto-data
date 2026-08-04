@@ -483,6 +483,26 @@ class TestThePageAndTheSnapshotAgree:
                 assert key in position
             assert 0 <= position["progress_pct"] <= 100
 
+    def test_the_whole_ledger_is_shipped_not_a_tail(self, project):
+        """The page sorts and filters these rows. Doing that to the most recent
+        fifty of four hundred would look exactly like doing it to all of them
+        while quietly answering a different question.
+        """
+        run(project.args())
+        snapshot = project.snapshot()
+        assert len(snapshot["trades"]) == snapshot["stats"]["closed"]
+
+    def test_the_chart_can_reconcile_with_the_headline_equity(self, project):
+        """The realised curve necessarily ends at the last closed trade, so a
+        chart of it alone finishes below the equity printed beside it. The gap
+        is handed over as a fact rather than left to be puzzled over.
+        """
+        run(project.args())
+        snapshot = project.snapshot()
+        now = snapshot["equity_now"]
+        assert now["realised"] + now["unrealised"] == pytest.approx(now["equity"], abs=0.02)
+        assert now["equity"] == pytest.approx(snapshot["equity"], abs=0.02)
+
     def test_the_by_symbol_panel_covers_the_whole_ledger(self, project):
         """Not just the recent tail. The research found the edge concentrated in
         some names and absent in others, which a fifty-trade window can invert.

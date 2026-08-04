@@ -1,30 +1,31 @@
 {
   "_comment": "Paper-trading settings. The rule and universe are the ones milestone 2 measured: breakout-volume across all five symbols. Note what the research actually said before reading any equity number here -- the walk-forward across six sequential windows put the edge almost entirely in the first (late 2024), with two windows below random. This account exists to watch that hold up or fall apart on candles nobody has looked at yet, not because the edge is settled.",
-
   "_universe": "All five rather than the four alts. BTC measured as a null and dropping it improved every pooled number, but a null measured on one two-year sample is a weak reason to stop watching an asset, and paper trading costs nothing per symbol.",
-
   "exchange": "binance",
   "timeframe": "1h",
-  "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"],
-
+  "symbols": [
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+    "ADA/USDT"
+  ],
   "rule": "breakout-volume",
   "params": {},
-
   "_exit": "A 168-bar hold is one week, the horizon where the rule measured best. trail is null so the first paper record measures the signal and nothing else -- the same reasoning trades.py gives for defaulting stops off. Turn it on later and the difference is what the exit was worth.",
   "hold": 168,
   "stop": null,
   "target": null,
   "trail": null,
-
   "_wallet": "Ten thousand at a fifth each across at most five positions, so a fully invested account holds five names and no cash. Round numbers chosen before any result was looked at.",
   "starting_capital": 10000.0,
   "size_fraction": 0.2,
   "max_positions": 5,
   "one_per_symbol": true,
-
   "_costs": "Binance spot taker, plus an assumed half a basis point of slippage per side. The same numbers the backtest charges, so a paper run and a backtest of the same period are priced identically.",
   "costs": {
     "fee": 0.001,
     "slippage": 0.0005
-  }
+  },
+  "benchmark": "basket"
 }
