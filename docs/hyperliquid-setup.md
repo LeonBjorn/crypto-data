@@ -27,6 +27,19 @@ for a key, so one cannot arrive in the repository by being pasted into a config.
 
 ---
 
+## Checking it, before anything else
+
+```
+uv run python scripts/testnet_check.py          # stages 1-3, no credentials needed
+uv run python scripts/testnet_check.py --place-order   # stage 5, sends ONE small testnet order
+```
+
+Stages 1-3 need no credentials and already pass: the endpoint resolves to
+`api.hyperliquid-testnet.xyz`, markets load, a live price is read, and the
+allow-list, per-order cap and kill switch each refuse an order with a real
+client underneath. Stage 4 reads your balances and positions. Stage 5 is the
+only one that sends anything, is opt-in, and is testnet-only.
+
 ## Testnet
 
 1. Get testnet funds from Hyperliquid's faucet at
