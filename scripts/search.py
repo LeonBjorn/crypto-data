@@ -43,7 +43,7 @@ is a hypothesis to test on data nobody has looked at, not a result.
 
 import numpy as np
 
-from signals import evaluate, prices, rules
+from signals import evaluate, prices, rules, trades
 
 SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT"]
 
@@ -68,7 +68,8 @@ def windows_of(frames, count=WINDOWS):
     ]
 
 
-def measure(pieces, rule, *, side="long", hold=168, funding=HL_FUNDING, params=None):
+def measure(pieces, rule, *, side="long", hold=168, funding=HL_FUNDING, params=None,
+            costs=trades.HYPERLIQUID_TAKER):
     """One window's pooled mean and percentile, or None if nothing traded."""
     parts = []
     for symbol, frame in pieces.items():
@@ -78,7 +79,8 @@ def measure(pieces, rule, *, side="long", hold=168, funding=HL_FUNDING, params=N
         try:
             parts.append(
                 evaluate.collect(
-                    frame, signal, hold=hold, symbol=symbol, side=side, funding=funding
+                    frame, signal, hold=hold, symbol=symbol, side=side, funding=funding,
+                    costs=costs
                 )
             )
         except evaluate.EvalError:

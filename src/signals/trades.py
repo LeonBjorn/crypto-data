@@ -109,9 +109,13 @@ __all__ = [
     "SIDES",
     "Book",
     "Costs",
+    "BINANCE_SPOT",
     "DEFAULT_COSTS",
     "DEFAULT_HOLDS",
     "FREE",
+    "HYPERLIQUID_MAKER",
+    "HYPERLIQUID_TAKER",
+    "VENUES",
     "TradeError",
     "across_holds",
     "round_trips",
@@ -183,6 +187,31 @@ class Costs:
 
 DEFAULT_COSTS = Costs()
 FREE = Costs(fee=0.0, slippage=0.0)
+
+# Named venues, because "0.0015 per side" in a call is a number nobody can check
+# and every result depends on it. The default stays Binance spot so that no
+# earlier measurement silently changes meaning; the others have to be asked for.
+#
+# The gap between them is not a detail. Binance spot taker plus assumed slippage
+# is 0.30% for a round trip; Hyperliquid taker is closer to 0.13%. Every strategy
+# measured in this project so far has been charged the larger number, which means
+# the hurdle has been overstated by about the size of a week's funding on every
+# single trade.
+BINANCE_SPOT = Costs(fee=0.001, slippage=0.0005)
+
+# Hyperliquid's base tier. Taker is what a market order pays and is the only
+# honest default: a maker fee assumes a limit order that filled, and a limit
+# order fills precisely when the market is moving against you and sits there
+# when it is not. Modelling that as a discount would be inventing an edge.
+HYPERLIQUID_TAKER = Costs(fee=0.00045, slippage=0.0002)
+HYPERLIQUID_MAKER = Costs(fee=0.00015, slippage=0.0)
+
+VENUES = {
+    "binance-spot": BINANCE_SPOT,
+    "hyperliquid-taker": HYPERLIQUID_TAKER,
+    "hyperliquid-maker": HYPERLIQUID_MAKER,
+    "free": FREE,
+}
 
 
 @dataclass(frozen=True)
