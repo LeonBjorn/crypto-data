@@ -32,6 +32,27 @@ cannot withdraw, and keep the master key nowhere near this process.
     HYPERLIQUID_PRIVATE_KEY      an API/agent wallet key, never the master key
     HYPERLIQUID_ALLOW_MAINNET    must equal "yes" before mainnet is reachable
 
+THREE THINGS THAT ARE NOT THE SAME ON A VENUE AS IN THE STORE
+-------------------------------------------------------------
+*The symbol.* The store is keyed by Binance spot pairs -- `BTC/USDT` -- and
+Hyperliquid trades perpetuals called `BTC/USDC:USDC`. Nothing translated between
+them until now, so an engine handed this broker would have asked for a market
+that does not exist. Mapping is resolved against the venue's own listings rather
+than by string surgery, and a symbol with no perpetual is refused rather than
+quietly skipped. Note that testnet lists fewer markets than mainnet: XRP has a
+perpetual on mainnet and none on testnet, so a testnet rehearsal of this
+project's five symbols can only ever cover four.
+
+*The quantity.* Venues round to a lot size, and `amount_to_precision` will
+happily return zero. ADA's step is one whole unit, so a fifth of a unit becomes
+nothing at all -- and an order for nothing is not a small order, it is a bug that
+looks like a filled position of size zero. Rounding is applied here and a result
+of zero is refused.
+
+*Closing versus opening.* A sell that is meant to close a long will open a short
+instead if the position has already gone. Exits are sent reduce-only, so the
+worst case is that nothing happens rather than that the book silently flips.
+
 WHAT IT DOES NOT ASSUME
 -----------------------
 The engine issues an intent and reads a Fill back. A live venue partially fills,
@@ -90,6 +111,7 @@ class HyperliquidBroker:
         max_order_notional=100.0,
         max_total_exposure=500.0,
         kill_switch=DEFAULT_KILL_SWITCH,
+        symbol_map=None,
         client=None,
     ):
         if network not in ("testnet", "mainnet"):
@@ -111,8 +133,18 @@ class HyperliquidBroker:
         self.max_order_notional = float(max_order_notional)
         self.max_total_exposure = float(max_total_exposure)
         self.kill_switch = Path(kill_switch)
+        # Explicit mapping wins; otherwise it is resolved from the venue's own
+        # listings the first time one is needed. Explicit exists so a test, or
+        # an operator who disagrees with the resolution, can pin it.
+        self.symbol_map = dict(symbol_map or {})
+        self._markets = None
         self.orders = []
 
+        # Whether the client can act as an account, as opposed to merely read
+        # public data. A dry run with no key still gets a real client -- symbol
+        # resolution and lot sizes are public information and are most of what a
+        # rehearsal needs to check.
+        self.authenticated = True
         self._client = client if client is not None else self._build_client()
 
     # -- construction -------------------------------------------------------
@@ -126,16 +158,22 @@ class HyperliquidBroker:
         if not address or not key:
             if self.dry_run:
                 # A dry run with no credentials is a legitimate thing to want:
-                # it exercises the wiring and the guards without holding a key
-                # at all. It cannot read positions, so the exposure cap has
-                # nothing to check -- which is sound only because nothing is
-                # sent. It says so rather than appearing to be armed.
+                # it exercises the wiring and the guards without holding a key at
+                # all. It still gets a real client, because market listings and
+                # lot sizes are public and resolving them is most of the value of
+                # a rehearsal. What it cannot do is read the account, so the
+                # exposure cap has nothing to check -- sound only because nothing
+                # is sent, and said out loud rather than left to be assumed.
                 log.warning(
                     "no credentials in the environment; running unauthenticated. "
-                    "Orders are logged, positions cannot be read, and the exposure "
-                    "cap is not enforceable in this mode."
+                    "Symbols and lot sizes resolve normally, orders are logged "
+                    "rather than sent, and the exposure cap is not enforceable."
                 )
-                return None
+                self.authenticated = False
+                public = ccxt.hyperliquid({"enableRateLimit": True})
+                if self.network == "testnet":
+                    public.set_sandbox_mode(True)
+                return public
             raise LiveTradingRefused(
                 f"set {ADDRESS_ENV} and {KEY_ENV} in the environment. They are "
                 f"deliberately not read from any config file, so that a key "
@@ -151,6 +189,72 @@ class HyperliquidBroker:
         if self.network == "testnet":
             client.set_sandbox_mode(True)
         return client
+
+    # -- translating between the store and the venue -------------------------
+
+    def _load_markets(self):
+        if self._markets is None:
+            if self._client is None:
+                raise LiveTradingRefused(
+                    "cannot resolve venue symbols without a client. Pass "
+                    "symbol_map explicitly for an unauthenticated dry run."
+                )
+            self._markets = self._client.load_markets()
+        return self._markets
+
+    def resolve(self, symbol):
+        """The venue's name for a symbol the store knows by another.
+
+        Matched on the base asset and required to be a perpetual, because
+        `BTC/USDC` and `BTC/USDC:USDC` both exist on this venue and are
+        different instruments. A base with no perpetual raises rather than
+        falling back to spot -- silently trading a different instrument from the
+        one the strategy chose is the failure this method exists to prevent.
+        """
+        if symbol in self.symbol_map:
+            return self.symbol_map[symbol]
+
+        base = symbol.split("/")[0].upper()
+        markets = self._load_markets()
+        matches = [
+            name for name, market in markets.items()
+            if market.get("swap") and (market.get("base") or "").upper() == base
+        ]
+        if not matches:
+            listed = sorted(
+                (m.get("base") or "") for m in markets.values() if m.get("swap")
+            )
+            raise LiveTradingRefused(
+                f"{symbol} has no perpetual market on this venue "
+                f"({self.network}). {base} is not among the {len(listed)} listed. "
+                f"Note testnet lists fewer markets than mainnet -- XRP is a "
+                f"perpetual on mainnet and not on testnet."
+            )
+        resolved = sorted(matches)[0]
+        self.symbol_map[symbol] = resolved
+        return resolved
+
+    def _round_quantity(self, venue_symbol, qty):
+        """Quantity at the venue's lot size, refusing a result of zero.
+
+        `amount_to_precision` rounds down, and for an asset whose step is a whole
+        unit a fractional order becomes zero. Sending that is not a small trade;
+        it is an order for nothing that will read afterwards as a position of
+        size zero.
+        """
+        if self._client is None:
+            return float(qty)
+        rounded = float(self._client.amount_to_precision(venue_symbol, qty))
+        if rounded <= 0:
+            step = (self._load_markets().get(venue_symbol, {})
+                    .get("precision", {}).get("amount"))
+            raise LiveTradingRefused(
+                f"{venue_symbol}: a quantity of {qty:.10f} rounds to zero at this "
+                f"venue's lot size of {step}. The position is too small to express "
+                f"here -- raise the capital or drop the symbol, but do not send an "
+                f"order for nothing."
+            )
+        return rounded
 
     # -- the guards ---------------------------------------------------------
 
@@ -190,7 +294,7 @@ class HyperliquidBroker:
 
     # -- the interface the engine uses --------------------------------------
 
-    def market(self, symbol, side, qty, reference_price, timestamp) -> Fill:
+    def market(self, symbol, side, qty, reference_price, timestamp, *, reduce_only=False) -> Fill:
         """Send a market order and report what came back.
 
         The Fill is built from the venue's answer -- filled quantity, average
@@ -203,16 +307,23 @@ class HyperliquidBroker:
         if qty <= 0:
             raise BrokerError(f"quantity must be positive, got {qty!r}")
 
+        # The allow-list is checked against the symbol as the caller knows it,
+        # so an operator writes the names they configured rather than the
+        # venue's spelling of them.
         self._check(symbol, qty, reference_price)
+        venue_symbol = self.resolve(symbol)
+        qty = self._round_quantity(venue_symbol, qty)
 
         if self.dry_run:
             log.info(
-                "DRY RUN: would %s %.8f %s at ~%.6f (%s)",
-                side, qty, symbol, reference_price, self.network,
+                "DRY RUN: would %s %.8f %s (%s) at ~%.6f (%s)%s",
+                side, qty, venue_symbol, symbol, reference_price, self.network,
+                " reduce-only" if reduce_only else "",
             )
             self.orders.append(
-                {"symbol": symbol, "side": side, "qty": qty,
-                 "reference_price": reference_price, "dry_run": True}
+                {"symbol": symbol, "venue_symbol": venue_symbol, "side": side,
+                 "qty": qty, "reference_price": reference_price,
+                 "reduce_only": reduce_only, "dry_run": True}
             )
             # Priced as the paper broker would, and flagged, so a dry run is
             # legible as a simulation rather than mistaken for an execution.
@@ -222,11 +333,15 @@ class HyperliquidBroker:
                 fee=0.0, timestamp=int(timestamp),
             )
 
+        params = {"reduceOnly": True} if reduce_only else {}
         order = self._client.create_order(
-            symbol=symbol, type="market", side=side, amount=qty,
+            symbol=venue_symbol, type="market", side=side, amount=qty,
             price=reference_price,  # hyperliquid needs a reference for slippage bounds
+            params=params,
         )
         self.orders.append(order)
+        # Reported under the name the caller used, not the venue's, so the
+        # ledger stays keyed the same way the store and every earlier trade are.
         return self._fill_from(order, symbol, side, timestamp)
 
     def _fill_from(self, order, symbol, side, timestamp) -> Fill:
@@ -257,6 +372,16 @@ class HyperliquidBroker:
             timestamp=int(order.get("timestamp") or timestamp or time.time() * 1000),
         )
 
+    def close(self, symbol, side, qty, reference_price, timestamp) -> Fill:
+        """Exit a position, reduce-only.
+
+        A plain sell meant to close a long will open a short if the position has
+        already gone -- liquidated, closed by hand, or never opened because an
+        earlier order was rejected. Reduce-only makes the worst case "nothing
+        happened" instead of "the book is now short".
+        """
+        return self.market(symbol, side, qty, reference_price, timestamp, reduce_only=True)
+
     def positions(self) -> dict:
         """Open quantity per symbol, as the venue understands it.
 
@@ -265,7 +390,7 @@ class HyperliquidBroker:
         happened while nothing was running -- so state is read back rather than
         assumed on every run.
         """
-        if self._client is None:
+        if self._client is None or not self.authenticated:
             return {}
         held = {}
         for position in self._client.fetch_positions() or []:
@@ -276,12 +401,16 @@ class HyperliquidBroker:
         return held
 
     def balances(self) -> dict:
+        if not self.authenticated:
+            raise LiveTradingRefused(
+                "balances need credentials; this client is unauthenticated."
+            )
         balance = self._client.fetch_balance() or {}
         return {"free": balance.get("free", {}), "total": balance.get("total", {})}
 
     def exposure(self) -> float:
         """Absolute notional currently open, for the cap check."""
-        if self._client is None:
+        if self._client is None or not self.authenticated:
             # Only reachable in an unauthenticated dry run, where no order is
             # sent and there is therefore no exposure to cap.
             return 0.0

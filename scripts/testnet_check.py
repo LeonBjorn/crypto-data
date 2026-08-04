@@ -10,11 +10,13 @@ Run it by hand:
 
     uv run python scripts/testnet_check.py
 
-It works in stages and stops at the first one that cannot proceed. Stages 1-3
-need no credentials at all and check the things most likely to be wrong. Stage 4
-needs an API wallet and still sends nothing. Stage 5 is the only one that places
-an order, is refused unless `--place-order` is passed, and is refused again
-unless the network is testnet.
+It works in stages and stops at the first one that cannot proceed. Stages 1-5
+need no credentials at all and check the things most likely to be wrong --
+reachability, prices, the refusals, translating this project's symbols into the
+venue's perpetuals, and whether a realistic position survives the lot size.
+Stage 6 needs an API wallet and still sends nothing. Stage 7 is the only one that
+places an order, is refused unless `--place-order` is passed, and is refused
+again unless the network is testnet.
 
     HYPERLIQUID_WALLET_ADDRESS   the account
     HYPERLIQUID_PRIVATE_KEY      an API/agent wallet key -- never the master key
@@ -139,9 +141,53 @@ def stage_guards(price):
     return broker
 
 
+def stage_symbols():
+    """Do this project's configured symbols exist here, and at what lot size.
+
+    The store is keyed by Binance spot pairs and this venue trades perpetuals,
+    so every symbol has to be translated. Testnet lists fewer markets than
+    mainnet, and the gap is not academic: XRP is a perpetual on mainnet and not
+    on testnet, so a rehearsal here covers four of this project's five symbols.
+    """
+    head(4, "translating the configured symbols")
+    import json as _json
+
+    configured = _json.load(open("config/paper.json"))["symbols"]
+    broker = HyperliquidBroker(
+        network="testnet", dry_run=True,
+        allowed_symbols=set(configured), max_order_notional=25.0,
+    )
+
+    missing = []
+    for symbol in configured:
+        try:
+            ok(f"{symbol:10s} -> {broker.resolve(symbol)}")
+        except LiveTradingRefused:
+            missing.append(symbol)
+            bad(f"{symbol:10s} has no perpetual on testnet")
+
+    if missing:
+        note(f"{len(missing)} of {len(configured)} cannot be rehearsed here: {missing}")
+        note("they may still exist on mainnet; this is a testnet coverage gap, not a bug")
+    return broker
+
+
+def stage_sizes(broker, price):
+    """Does a realistic position size survive the venue's lot size."""
+    head(5, "position sizes at real lot sizes")
+    for symbol, mark, usd in (("BTC/USDT", price, 20.0), ("ADA/USDT", 0.19, 20.0),
+                              ("ADA/USDT", 0.19, 0.05)):
+        try:
+            fill = broker.market(symbol, BUY, usd / mark, mark, 0)
+            ok(f"${usd:>6.2f} of {symbol:9s} -> {fill.qty}")
+        except LiveTradingRefused as failure:
+            ok(f"${usd:>6.2f} of {symbol:9s} refused: {str(failure).split('.')[0][:60]}")
+    note("an order that rounds to zero is refused rather than sent as nothing")
+
+
 def stage_authenticated(price):
     """With credentials: can we read our own account. Still sends nothing."""
-    head(4, "authenticated reads")
+    head(6, "authenticated reads")
     if not os.environ.get(ADDRESS_ENV) or not os.environ.get(KEY_ENV):
         note(f"skipped -- set {ADDRESS_ENV} and {KEY_ENV} to run this stage")
         note("use an API/agent wallet, which cannot withdraw. Never the master key.")
@@ -161,7 +207,7 @@ def stage_authenticated(price):
 
 def stage_order(price, confirm):
     """The only stage that sends anything. Testnet, tiny, and opt-in twice."""
-    head(5, "placing one real testnet order")
+    head(7, "placing one real testnet order")
     if not confirm:
         note("skipped -- pass --place-order to send a single small testnet order")
         return
@@ -199,6 +245,8 @@ def main():
         return 1
     if stage_guards(price) is None:
         return 1
+    broker = stage_symbols()
+    stage_sizes(broker, price)
     stage_authenticated(price)
     stage_order(price, args.place_order)
 

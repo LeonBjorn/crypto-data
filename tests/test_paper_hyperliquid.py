@@ -24,7 +24,15 @@ from paper.hyperliquid import (
 class FakeVenue:
     """A venue that fills as instructed, so the guards can be tested alone."""
 
-    def __init__(self, *, filled=None, average=100.0, fee=0.05, positions=(), status="closed"):
+    def __init__(self, *, filled=None, average=100.0, fee=0.05, positions=(), status="closed",
+                 markets=None, step=1e-5):
+        self.markets = markets if markets is not None else {
+            "BTC/USDC:USDC": {"swap": True, "base": "BTC", "precision": {"amount": step}},
+            "BTC/USDC": {"swap": False, "base": "BTC", "precision": {"amount": step}},
+            "ETH/USDC:USDC": {"swap": True, "base": "ETH", "precision": {"amount": step}},
+            "ADA/USDC:USDC": {"swap": True, "base": "ADA", "precision": {"amount": 1.0}},
+        }
+        self.step = step
         self.filled = filled
         self.average = average
         self.fee = fee
@@ -32,8 +40,20 @@ class FakeVenue:
         self.status = status
         self.sent = []
 
-    def create_order(self, symbol, type, side, amount, price=None, **kwargs):
-        self.sent.append({"symbol": symbol, "side": side, "amount": amount})
+    def load_markets(self):
+        return self.markets
+
+    def amount_to_precision(self, symbol, amount):
+        # Rounded through Decimal: int(0.01 / 1e-5) is 999, not 1000, and a fake
+        # that loses precision would fail tests about code that does not.
+        from decimal import Decimal
+        step = self.markets.get(symbol, {}).get("precision", {}).get("amount", self.step)
+        units = (Decimal(str(amount)) / Decimal(str(step))).to_integral_value(rounding="ROUND_FLOOR")
+        return str(units * Decimal(str(step)))
+
+    def create_order(self, symbol, type, side, amount, price=None, params=None, **kwargs):
+        self.sent.append({"symbol": symbol, "side": side, "amount": amount,
+                          "params": params or {}})
         return {
             "symbol": symbol, "side": side,
             "filled": amount if self.filled is None else self.filled,
@@ -64,7 +84,7 @@ class TestItDoesNotTradeUnlessToldTwice:
     def test_a_dry_run_sends_nothing(self):
         venue = FakeVenue()
         b = broker(client=venue)
-        b.market("BTC/USDC:USDC", BUY, 0.01, 100.0, 0)
+        b.market("BTC/USDT", BUY, 0.01, 100.0, 0)
         assert venue.sent == []
 
     def test_mainnet_needs_the_environment_variable_as_well(self, monkeypatch):
@@ -94,7 +114,7 @@ class TestTheKillSwitch:
         stop.write_text("", encoding="utf-8")
         b = broker(kill_switch=str(stop), dry_run=False)
         with pytest.raises(LiveTradingRefused, match="kill switch"):
-            b.market("BTC/USDC:USDC", BUY, 0.01, 100.0, 0)
+            b.market("BTC/USDT", BUY, 0.01, 100.0, 0)
 
     def test_it_stops_a_dry_run_too(self, tmp_path):
         """A dry run that ignored the switch would report orders it would have
@@ -103,30 +123,30 @@ class TestTheKillSwitch:
         stop = tmp_path / "STOP"
         stop.write_text("", encoding="utf-8")
         with pytest.raises(LiveTradingRefused):
-            broker(kill_switch=str(stop)).market("BTC/USDC:USDC", BUY, 0.01, 100.0, 0)
+            broker(kill_switch=str(stop)).market("BTC/USDT", BUY, 0.01, 100.0, 0)
 
     def test_removing_it_resumes(self, tmp_path):
         stop = tmp_path / "STOP"
         stop.write_text("", encoding="utf-8")
         b = broker(kill_switch=str(stop))
         stop.unlink()
-        assert b.market("BTC/USDC:USDC", BUY, 0.01, 100.0, 0).qty == pytest.approx(0.01)
+        assert b.market("BTC/USDT", BUY, 0.01, 100.0, 0).qty == pytest.approx(0.01)
 
 
 class TestTheCaps:
     def test_a_symbol_outside_the_allow_list_is_refused(self):
-        b = broker(allowed_symbols={"BTC/USDC:USDC"})
+        b = broker(allowed_symbols={"BTC/USDT"})
         with pytest.raises(LiveTradingRefused, match="allowed list"):
-            b.market("DOGE/USDC:USDC", BUY, 1.0, 1.0, 0)
+            b.market("DOGE/USDT", BUY, 1.0, 1.0, 0)
 
     def test_an_empty_allow_list_permits_anything(self):
         """So the guard is opt-in rather than a silent block on a fresh setup."""
-        assert broker().market("ANY/USDC:USDC", BUY, 0.01, 10.0, 0)
+        assert broker().market("ETH/USDT", BUY, 0.01, 10.0, 0)
 
     def test_an_order_above_the_per_order_cap_is_refused(self):
         b = broker(max_order_notional=50.0)
         with pytest.raises(LiveTradingRefused, match="per-order cap"):
-            b.market("BTC/USDC:USDC", BUY, 1.0, 100.0, 0)
+            b.market("BTC/USDT", BUY, 1.0, 100.0, 0)
 
     def test_it_refuses_rather_than_quietly_trading_less(self):
         """Truncating to the cap would mean the position taken is not the
@@ -135,7 +155,7 @@ class TestTheCaps:
         venue = FakeVenue()
         b = broker(client=venue, max_order_notional=50.0, dry_run=False)
         with pytest.raises(LiveTradingRefused):
-            b.market("BTC/USDC:USDC", BUY, 1.0, 100.0, 0)
+            b.market("BTC/USDT", BUY, 1.0, 100.0, 0)
         assert venue.sent == []
 
     def test_an_order_breaching_total_exposure_is_refused(self):
@@ -143,7 +163,7 @@ class TestTheCaps:
                                       "contracts": 1.0, "side": "long"}])
         b = broker(client=venue, max_total_exposure=500.0, max_order_notional=1000.0)
         with pytest.raises(LiveTradingRefused, match="total exposure"):
-            b.market("BTC/USDC:USDC", BUY, 1.0, 100.0, 0)
+            b.market("BTC/USDT", BUY, 1.0, 100.0, 0)
 
     def test_exposure_that_cannot_be_read_refuses_rather_than_assuming_zero(self):
         class Broken(FakeVenue):
@@ -152,7 +172,7 @@ class TestTheCaps:
 
         b = broker(client=Broken(), dry_run=False)
         with pytest.raises(LiveTradingRefused, match="cannot be checked"):
-            b.market("BTC/USDC:USDC", BUY, 0.01, 100.0, 0)
+            b.market("BTC/USDT", BUY, 0.01, 100.0, 0)
 
 
 class TestItReadsFillsBackRatherThanAssuming:
@@ -161,25 +181,25 @@ class TestItReadsFillsBackRatherThanAssuming:
         leaves the engine holding a position that does not exist.
         """
         venue = FakeVenue(filled=0.004)
-        fill = broker(client=venue, dry_run=False).market("BTC/USDC:USDC", BUY, 0.01, 100.0, 0)
+        fill = broker(client=venue, dry_run=False).market("BTC/USDT", BUY, 0.01, 100.0, 0)
         assert fill.qty == pytest.approx(0.004)
 
     def test_the_price_is_the_venues_average_not_the_reference(self):
         venue = FakeVenue(average=101.5)
-        fill = broker(client=venue, dry_run=False).market("BTC/USDC:USDC", BUY, 1.0, 100.0, 0)
+        fill = broker(client=venue, dry_run=False).market("BTC/USDT", BUY, 1.0, 100.0, 0)
         assert fill.price == pytest.approx(101.5)
 
     def test_the_fee_worsens_the_effective_price_in_the_direction_that_hurts(self):
         venue = FakeVenue(average=100.0, fee=1.0)
-        buy = broker(client=venue, dry_run=False).market("BTC/USDC:USDC", BUY, 1.0, 100.0, 0)
-        sell = broker(client=venue, dry_run=False).market("BTC/USDC:USDC", SELL, 1.0, 100.0, 0)
+        buy = broker(client=venue, dry_run=False).market("BTC/USDT", BUY, 1.0, 100.0, 0)
+        sell = broker(client=venue, dry_run=False).market("BTC/USDT", SELL, 1.0, 100.0, 0)
         assert buy.effective_price > buy.price
         assert sell.effective_price < sell.price
 
     def test_an_order_that_reports_no_fill_raises_rather_than_inventing_one(self):
         venue = FakeVenue(filled=0.0)
         with pytest.raises(BrokerError, match="no fill"):
-            broker(client=venue, dry_run=False).market("BTC/USDC:USDC", BUY, 1.0, 100.0, 0)
+            broker(client=venue, dry_run=False).market("BTC/USDT", BUY, 1.0, 100.0, 0)
 
     def test_positions_come_from_the_venue_not_from_memory(self):
         venue = FakeVenue(positions=[
@@ -218,3 +238,76 @@ class TestThingsItCannotDoAtAll:
     def test_it_says_what_it_is_configured_as(self):
         assert "testnet" in broker().describe()
         assert "dry run" in broker().describe()
+
+
+class TestTranslatingToTheVenue:
+    """The store says BTC/USDT; Hyperliquid trades BTC/USDC:USDC."""
+
+    def test_a_store_symbol_resolves_to_the_perpetual(self):
+        assert broker().resolve("BTC/USDT") == "BTC/USDC:USDC"
+
+    def test_it_does_not_fall_back_to_spot(self):
+        """Both BTC/USDC and BTC/USDC:USDC exist on this venue and they are
+        different instruments. Silently trading the wrong one is the failure the
+        resolver exists to prevent.
+        """
+        assert broker().resolve("BTC/USDT") != "BTC/USDC"
+
+    def test_a_base_with_no_perpetual_is_refused(self):
+        """XRP has a perpetual on mainnet and none on testnet, so this is a real
+        case rather than a hypothetical one.
+        """
+        with pytest.raises(LiveTradingRefused, match="no perpetual"):
+            broker().resolve("XRP/USDT")
+
+    def test_an_explicit_mapping_wins(self):
+        b = broker(symbol_map={"BTC/USDT": "ETH/USDC:USDC"})
+        assert b.resolve("BTC/USDT") == "ETH/USDC:USDC"
+
+    def test_the_order_goes_to_the_venue_name(self):
+        venue = FakeVenue()
+        broker(client=venue, dry_run=False).market("BTC/USDT", BUY, 0.01, 100.0, 0)
+        assert venue.sent[0]["symbol"] == "BTC/USDC:USDC"
+
+    def test_but_the_fill_comes_back_under_the_name_that_was_asked_for(self):
+        """The ledger is keyed the way the store and every earlier trade are."""
+        fill = broker(client=FakeVenue(), dry_run=False).market("BTC/USDT", BUY, 0.01, 100.0, 0)
+        assert fill.symbol == "BTC/USDT"
+
+
+class TestQuantityRounding:
+    def test_it_rounds_to_the_venues_lot_size(self):
+        venue = FakeVenue(step=1e-5)
+        broker(client=venue, dry_run=False).market("BTC/USDT", BUY, 0.0312345678, 100.0, 0)
+        assert venue.sent[0]["amount"] == pytest.approx(0.03123, abs=1e-9)
+
+    def test_a_quantity_that_rounds_to_zero_is_refused(self):
+        """ADA's step is one whole unit, so a fifth of a unit becomes nothing.
+        An order for nothing is not a small order; it reads afterwards as a
+        filled position of size zero.
+        """
+        b = broker(client=FakeVenue(), dry_run=False, max_order_notional=1e9)
+        with pytest.raises(LiveTradingRefused, match="rounds to zero"):
+            b.market("ADA/USDT", BUY, 0.2, 1.0, 0)
+
+    def test_nothing_is_sent_when_it_would_round_away(self):
+        venue = FakeVenue()
+        b = broker(client=venue, dry_run=False, max_order_notional=1e9)
+        with pytest.raises(LiveTradingRefused):
+            b.market("ADA/USDT", BUY, 0.2, 1.0, 0)
+        assert venue.sent == []
+
+
+class TestClosingIsReduceOnly:
+    def test_close_sends_reduce_only(self):
+        """A sell meant to close a long opens a short if the position has already
+        gone. Reduce-only makes the worst case "nothing happened".
+        """
+        venue = FakeVenue()
+        broker(client=venue, dry_run=False).close("BTC/USDT", SELL, 0.01, 100.0, 0)
+        assert venue.sent[0]["params"].get("reduceOnly") is True
+
+    def test_an_ordinary_order_is_not_reduce_only(self):
+        venue = FakeVenue()
+        broker(client=venue, dry_run=False).market("BTC/USDT", BUY, 0.01, 100.0, 0)
+        assert not venue.sent[0]["params"].get("reduceOnly")
