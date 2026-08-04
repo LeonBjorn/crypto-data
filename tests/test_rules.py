@@ -90,6 +90,7 @@ ALL_RULES = [
     pytest.param("rsi-oversold", {"period": 2, "level": 50}, id="rsi-oversold"),
     pytest.param("breakout", {"window": 3}, id="breakout"),
     pytest.param("breakout-volume", {"window": 3, "volume_mult": 1.5}, id="breakout-volume"),
+    pytest.param("breakdown-volume", {"window": 3, "volume_mult": 1.5}, id="breakdown-volume"),
     pytest.param(
         "breakout-volume-trend",
         {"window": 3, "volume_mult": 1.5, "trend": 4},
@@ -645,6 +646,7 @@ class TestTheRegistry:
             "breakout",
             "breakout-volume",
             "breakout-volume-trend",
+            "breakdown-volume",
         }
 
     def test_the_names_are_sorted_so_help_text_is_stable(self):
@@ -784,8 +786,9 @@ class TestCandleValidation:
         entirely ordinary, so the refusal is worth keeping at both layers.
         """
         prices = random_walk(40, seed=1)
-        prices.loc[prices.index[20], "close"] = np.nan
-        prices.loc[prices.index[20], "high"] = np.nan
+        # Every price column, because the rules between them read close, high
+        # and low, and a hole punched in only some of those is not a hole.
+        prices.loc[prices.index[20], ["close", "high", "low"]] = np.nan
         with pytest.raises(ind.IndicatorError):
             rules.apply(name, prices, **kwargs)
 

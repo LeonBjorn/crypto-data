@@ -61,6 +61,7 @@ __all__ = [
     "breakout",
     "breakout_volume",
     "breakout_volume_trend",
+    "breakdown_volume",
     "get",
     "ma_cross",
     "names",
@@ -75,6 +76,7 @@ __all__ = [
 CLOSE_ONLY = ("close",)
 HIGH_AND_CLOSE = ("high", "close")
 HIGH_CLOSE_AND_VOLUME = ("high", "close", "volume")
+LOW_CLOSE_AND_VOLUME = ("low", "close", "volume")
 
 
 class RuleError(ValueError):
@@ -316,6 +318,52 @@ def breakout_volume_trend(candles, *, window=20, volume_mult=1.5, trend=200):
     return _turns_true(_condition(truth, defined), "breakout-volume-trend")
 
 
+def _breakdown_signal(candles, window):
+    """The mirror of `_breakout_signal`: a close under the prior `window` lows.
+
+    The same `.shift(1)` for the same reason -- the bar that breaks down is the
+    lowest bar around, so a window including it would move the floor down to
+    meet the price and the rule would never fire.
+
+    Lows set the level and the close breaks it, which is the conservative
+    pairing on this side too: a low is a price touched at an unknown moment
+    inside the hour, a close is one that had happened when the bar ended.
+    """
+    prior_low = ind.rolling_low(candles["low"], window).shift(1)
+    return candles["close"] < prior_low, prior_low.notna()
+
+
+def breakdown_volume(candles, *, window=20, volume_mult=1.5):
+    """Sell short when the close breaks under the prior lows on heavy volume.
+
+    The exact mirror of `breakout_volume`, and it exists because every weakness
+    this project has measured traces back to being long-only. The account made
+    money over a window in which an equal-weight basket of its own symbols lost
+    sixteen percent, purely by being out of the market a lot; a rule that can be
+    short has something to do in that market rather than merely less to lose.
+
+    Deliberately the same parameters as its long twin, untuned. If a mirrored
+    rule with mirrored settings works on the short side, that is a fact about
+    the market. If it only works after the window is adjusted, that is a fact
+    about the adjusting.
+
+    Note this returns a *signal*, not a direction: it says "here is a reason to
+    be short". `trades.round_trips(..., side="short")` is what turns that into a
+    position, and the separation is on purpose -- a rule answers one question
+    about one bar and has no opinion about position management.
+    """
+    _frame(candles, LOW_CLOSE_AND_VOLUME, "breakdown-volume")
+    _check_volume_mult(volume_mult, "breakdown-volume")
+
+    price_truth, price_defined = _breakdown_signal(candles, window)
+    average_volume = ind.sma(candles["volume"], window).shift(1)
+    volume_truth = candles["volume"] > volume_mult * average_volume
+
+    truth = price_truth & volume_truth
+    defined = price_defined & average_volume.notna()
+    return _turns_true(_condition(truth, defined), "breakdown-volume")
+
+
 def _defaults_of(function):
     """The keyword defaults a rule declares in its own signature.
 
@@ -374,6 +422,12 @@ RULES = {
             function=breakout_volume,
             description="breakout on volume above 1.5x its own 20-bar average",
             columns=HIGH_CLOSE_AND_VOLUME,
+        ),
+        Rule(
+            name="breakdown-volume",
+            function=breakdown_volume,
+            description="close breaks under the previous 20 bars' lows on 1.5x volume",
+            columns=LOW_CLOSE_AND_VOLUME,
         ),
         Rule(
             name="breakout-volume-trend",

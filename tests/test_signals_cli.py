@@ -43,11 +43,12 @@ def candle_rows(count, *, seed, start=T0):
     What these tests need is a series with enough shape that every rule triggers,
     and a seed so that it is the same series every time.
 
-    Volume is tied to the size of each up-bar rather than held flat, so the
-    volume-confirmed breakout fires here too. A flat volume series would leave
-    that one rule silent, which the evaluator treats as an error -- so the whole
-    default run would fail for a reason that has nothing to do with what a test
-    is checking.
+    Volume is tied to the size of each bar's move, in *either* direction, so the
+    volume-confirmed rules fire here -- the downside one included. Spiking only
+    on up-bars leaves every down-bar at flat volume, which silently starves
+    breakdown-volume of signals, and a rule that never fires is refused by the
+    lookahead guard rather than passed. That failure is correct and its cause is
+    nothing to do with what any test here is checking.
     """
     rng = np.random.default_rng(seed)
     rows = []
@@ -62,7 +63,7 @@ def candle_rows(count, *, seed, start=T0):
                 max(opened, closed) + abs(rng.normal(0.0, 0.3)),
                 min(opened, closed) - abs(rng.normal(0.0, 0.3)),
                 closed,
-                10.0 + 800.0 * max(0.0, closed - opened),
+                10.0 + 800.0 * abs(closed - opened),
             ]
         )
         price = closed

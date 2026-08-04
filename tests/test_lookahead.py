@@ -31,12 +31,12 @@ T0 = 1_722_470_400_000
 def walk(count, seed=0, start=100.0):
     """A candle frame following a random walk, with sane OHLC.
 
-    Volume tracks the size of each up-move rather than being flat noise, so that
-    the volume-confirmed breakout can actually fire: a bar that makes a new high
-    tends to be a large up-move here, which spikes its volume above the trailing
-    average. A flat-ish volume series would leave that rule silent, and a silent
-    rule passes the guard by having nothing to check -- which is the one thing
-    these honest-rule tests must not let happen.
+    Volume tracks the size of each move in *either* direction, so both the
+    volume-confirmed breakout and its downside mirror actually fire. Spiking
+    only on up-moves leaves every down-bar at flat volume and starves the
+    breakdown rule of signals -- and a silent rule passes the guard by having
+    nothing to check, which is the one thing these honest-rule tests must not
+    let happen.
     """
     rng = np.random.default_rng(seed)
     close = start + rng.standard_normal(count).cumsum()
@@ -49,7 +49,7 @@ def walk(count, seed=0, start=100.0):
             "high": close + spread,
             "low": close - spread,
             "close": close,
-            "volume": 10.0 + 800.0 * np.clip(move, 0.0, None),
+            "volume": 10.0 + 800.0 * np.abs(move),
         }
     )
 
@@ -223,6 +223,7 @@ class TestItPassesHonestRules:
             "breakout": {"window": 4},
             "breakout-volume": {"window": 4, "volume_mult": 1.2},
             "breakout-volume-trend": {"window": 4, "volume_mult": 1.2, "trend": 30},
+            "breakdown-volume": {"window": 4, "volume_mult": 1.2},
         }
         report = lookahead.check(walk(600, seed=3), name, **QUICK, **overrides[name])
         assert report.ok, report.summary()

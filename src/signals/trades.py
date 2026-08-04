@@ -99,7 +99,14 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+LONG = "long"
+SHORT = "short"
+SIDES = (LONG, SHORT)
+
 __all__ = [
+    "LONG",
+    "SHORT",
+    "SIDES",
     "Book",
     "Costs",
     "DEFAULT_COSTS",
@@ -125,6 +132,10 @@ TRADE_COLUMNS = {
     "bars_held": "int64",
     "gross_return": "float64",
     "net_return": "float64",
+    # Which way the trade was pointed, and what waiting cost (or earned). Both
+    # are constants for a spot backtest and neither is on a perpetual.
+    "side": "object",
+    "funding": "float64",
 }
 
 REQUIRED_COLUMNS = ("timestamp", "open", "high", "low", "close")
@@ -192,6 +203,8 @@ class Book:
     stop: Optional[float] = None
     target: Optional[float] = None
     trail: Optional[float] = None
+    side: str = LONG
+    funding: object = None
 
     def _exits(self) -> str:
         if not len(self.trades):
@@ -279,7 +292,7 @@ def _empty_trades():
     return pd.DataFrame({name: pd.Series(dtype=dtype) for name, dtype in TRADE_COLUMNS.items()})
 
 
-def _exit_of(entry_bar, final_bar, entry_price, opens, highs, lows, stop, target):
+def _exit_of(entry_bar, final_bar, entry_price, opens, highs, lows, stop, target, side=LONG):
     """Where the trade ends: (bar, price, reason).
 
     The bars lived through are `entry_bar` up to but not including `final_bar`.
@@ -287,17 +300,26 @@ def _exit_of(entry_bar, final_bar, entry_price, opens, highs, lows, stop, target
     `final_bar` is no longer the trade's problem -- it was sold at that open.
     """
     lived = slice(entry_bar, final_bar)
-    stop_level = None if stop is None else entry_price * (1 - stop)
-    target_level = None if target is None else entry_price * (1 + target)
+    long = side == LONG
+
+    # A short is the mirror image and nothing more: its stop is *above* the
+    # entry and is reached by a rising high, its target is below and is reached
+    # by a falling low. Writing it as one sign rather than two branches keeps the
+    # pessimism identical on both sides, which is the part that would otherwise
+    # quietly differ.
+    stop_level = None if stop is None else entry_price * (1 - stop if long else 1 + stop)
+    target_level = None if target is None else entry_price * (1 + target if long else 1 - target)
     first_stop = np.inf
     first_target = np.inf
 
     if stop_level is not None:
-        touched = np.flatnonzero(lows[lived] <= stop_level)
+        against = lows[lived] <= stop_level if long else highs[lived] >= stop_level
+        touched = np.flatnonzero(against)
         if len(touched):
             first_stop = int(touched[0])
     if target_level is not None:
-        touched = np.flatnonzero(highs[lived] >= target_level)
+        toward = highs[lived] >= target_level if long else lows[lived] <= target_level
+        touched = np.flatnonzero(toward)
         if len(touched):
             first_target = int(touched[0])
 
@@ -308,13 +330,17 @@ def _exit_of(entry_bar, final_bar, entry_price, opens, highs, lows, stop, target
     # bar, and the bar does not say which came first, so the stop is assumed.
     if first_stop <= first_target:
         bar = entry_bar + first_stop
-        return bar, min(opens[bar], stop_level), "stop"
+        # A bar that gapped through the level never offered it. Which direction
+        # counts as "through" flips with the side; the principle does not.
+        fill = min(opens[bar], stop_level) if long else max(opens[bar], stop_level)
+        return bar, fill, "stop"
 
     bar = entry_bar + first_target
-    return bar, max(opens[bar], target_level), "target"
+    fill = max(opens[bar], target_level) if long else min(opens[bar], target_level)
+    return bar, fill, "target"
 
 
-def _trailing_exit(entry_bar, final_bar, entry_price, opens, highs, lows, trail):
+def _trailing_exit(entry_bar, final_bar, entry_price, opens, highs, lows, trail, side=LONG):
     """The first bar a trailing stop is hit, as `(bar, price)`, or None.
 
     The stop rides `trail` below the highest high seen so far and never loosens.
@@ -332,23 +358,87 @@ def _trailing_exit(entry_bar, final_bar, entry_price, opens, highs, lows, trail)
     that opened straight through the stop never offered the stop price, and
     inventing it would flatter exactly the worst exits. This mirrors _exit_of.
     """
-    peak = entry_price
+    long = side == LONG
+    # For a long this rides the highest high and sits below it; for a short it
+    # rides the lowest low and sits above it. Same idea, same pessimism about
+    # which extreme of a candle came first.
+    extreme = entry_price
     for bar in range(entry_bar, final_bar):
-        level = peak * (1 - trail)
-        if lows[bar] <= level:
-            return bar, min(opens[bar], level)
-        if highs[bar] > peak:
-            peak = highs[bar]
+        level = extreme * (1 - trail) if long else extreme * (1 + trail)
+        if long:
+            if lows[bar] <= level:
+                return bar, min(opens[bar], level)
+            if highs[bar] > extreme:
+                extreme = highs[bar]
+        else:
+            if highs[bar] >= level:
+                return bar, max(opens[bar], level)
+            if lows[bar] < extreme:
+                extreme = lows[bar]
     return None
 
 
-def round_trips(candles, signals, *, hold, stop=None, target=None, trail=None, costs=DEFAULT_COSTS):
+def effective_prices(entry_price, exit_price, per_side, side=LONG):
+    """What the two fills really cost, once trading them is paid for.
+
+    A long pays above the tape to get in and receives below it to get out. A
+    short is the exact mirror: it receives below to open and pays above to
+    close. Writing both as an effective pair means the return formula below is
+    one line rather than a branch, and the two sides cannot drift apart.
+    """
+    if side == LONG:
+        return entry_price * (1 + per_side), exit_price * (1 - per_side)
+    return entry_price * (1 - per_side), exit_price * (1 + per_side)
+
+
+def returns_of(entry_price, exit_price, per_side, side, funding_paid):
+    """`(gross, net)` for one round trip, as fractions of the notional.
+
+    A short's gross return is the exact negation of a long's: sell at E, buy
+    back at X, and the gain is `1 - X/E`. Net applies the effective prices and
+    then the funding.
+
+    Funding is added rather than subtracted for a short, and that sign is the
+    whole reason perpetuals are interesting here. The side paying funding is
+    whichever one the crowd is on, which is usually long -- so a short is
+    frequently paid to wait, and this project's measured weakness has always
+    been that it can only wait in one direction.
+    """
+    gross = exit_price / entry_price - 1 if side == LONG else 1 - exit_price / entry_price
+    eff_entry, eff_exit = effective_prices(entry_price, exit_price, per_side, side)
+    net = (eff_exit / eff_entry - 1) if side == LONG else (1 - eff_exit / eff_entry)
+    net += -funding_paid if side == LONG else funding_paid
+    return gross, net
+
+
+def _funding_over(funding, entry_bar, exit_bar):
+    """The funding accrued while the position was open, as a fraction.
+
+    Accepts a flat per-bar rate or a per-bar series, because a constant is what
+    you want for a what-if and the real thing is anything but constant. Charged
+    on the entry notional rather than on a position marked bar by bar: the
+    difference is second-order next to the rate itself, and pretending otherwise
+    would imply a precision this does not have.
+    """
+    if funding is None:
+        return 0.0
+    bars = max(0, int(exit_bar) - int(entry_bar))
+    if isinstance(funding, numbers.Real) and not isinstance(funding, bool):
+        return float(funding) * bars
+    values = np.asarray(funding, dtype="float64")[int(entry_bar):int(exit_bar)]
+    return float(np.nansum(values))
+
+
+def round_trips(candles, signals, *, hold, side=LONG, stop=None, target=None, trail=None,
+                costs=DEFAULT_COSTS, funding=None):
     """Score every signal as a round trip. Returns a Book.
 
     `hold` is in bars. `stop` and `target` are fractions of the entry price --
     0.02 is a stop two percent below it -- and both are off by default.
     """
     hold = _whole_number(hold, "hold")
+    if side not in SIDES:
+        raise TradeError(f"side must be one of {SIDES}, got {side!r}")
     stop = _fraction(stop, "stop", upper=1.0)
     target = _fraction(target, "target", upper=None)
     trail = _fraction(trail, "trail", upper=1.0)
@@ -385,7 +475,7 @@ def round_trips(candles, signals, *, hold, stop=None, target=None, trail=None, c
 
         entry_price = opens[entry_bar]
         exit_bar, exit_price, reason = _exit_of(
-            entry_bar, final_bar, entry_price, opens, highs, lows, stop, target
+            entry_bar, final_bar, entry_price, opens, highs, lows, stop, target, side
         )
 
         # The trailing stop is layered on top rather than folded into _exit_of,
@@ -394,17 +484,20 @@ def round_trips(candles, signals, *, hold, stop=None, target=None, trail=None, c
         # same bar at a worse price, keeping the tie-break pessimistic.
         if trail is not None:
             trailed = _trailing_exit(
-                entry_bar, final_bar, entry_price, opens, highs, lows, trail
+                entry_bar, final_bar, entry_price, opens, highs, lows, trail, side
             )
             if trailed is not None:
                 trail_bar, trail_price = trailed
-                if trail_bar < exit_bar or (
-                    trail_bar == exit_bar and trail_price < exit_price
-                ):
+                # "Worse" flips with the side: for a long the lower fill is the
+                # unkind one, for a short the higher fill is.
+                worse = (
+                    trail_price < exit_price if side == LONG else trail_price > exit_price
+                )
+                if trail_bar < exit_bar or (trail_bar == exit_bar and worse):
                     exit_bar, exit_price, reason = trail_bar, trail_price, "trail"
 
-        paid = entry_price * (1 + costs.per_side)
-        received = exit_price * (1 - costs.per_side)
+        funding_paid = _funding_over(funding, entry_bar, exit_bar)
+        gross, net = returns_of(entry_price, exit_price, costs.per_side, side, funding_paid)
         rows.append(
             {
                 "entry_bar": entry_bar,
@@ -415,8 +508,10 @@ def round_trips(candles, signals, *, hold, stop=None, target=None, trail=None, c
                 "exit_price": exit_price,
                 "exit_reason": reason,
                 "bars_held": exit_bar - entry_bar,
-                "gross_return": exit_price / entry_price - 1,
-                "net_return": received / paid - 1,
+                "gross_return": gross,
+                "net_return": net,
+                "side": side,
+                "funding": funding_paid,
             }
         )
 
@@ -430,6 +525,8 @@ def round_trips(candles, signals, *, hold, stop=None, target=None, trail=None, c
         stop=stop,
         target=target,
         trail=trail,
+        side=side,
+        funding=funding,
     )
 
 
