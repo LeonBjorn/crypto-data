@@ -111,6 +111,8 @@ class Account:
         size_fraction=DEFAULT_SIZE_FRACTION,
         max_positions=DEFAULT_MAX_POSITIONS,
         one_per_symbol=True,
+        risk=None,
+        guard=None,
     ):
         self.starting_capital = _positive_number(starting_capital, "starting_capital")
         self.size_fraction = _positive_number(size_fraction, "size_fraction", upper=1.0)
@@ -129,6 +131,10 @@ class Account:
 
         self.max_positions = max_positions
         self.one_per_symbol = bool(one_per_symbol)
+        # Optional. With neither, the account sizes a flat fraction and never
+        # halts, which is exactly what it did before either existed.
+        self.risk = risk
+        self.guard = guard
         self.cash = self.starting_capital
         self.is_unlimited = False
         self._held = {}
@@ -168,6 +174,13 @@ class Account:
         """
         if self.is_unlimited:
             return None
+        # Checked before anything else: a tripped drawdown limit is not one
+        # consideration among several, it is the end of the conversation.
+        if self.guard is not None and self.guard.tripped:
+            return (
+                f"drawdown limit of {abs(self.guard.limit):.0%} tripped "
+                f"-- no new positions"
+            )
         if self.one_per_symbol and self.holds(symbol):
             return f"already holding {symbol}"
         if self.max_positions is not None and self.open_positions >= self.max_positions:
@@ -188,7 +201,13 @@ class Account:
             # real number keeps the arithmetic finite where infinite cash would
             # not.
             return 1.0
-        return min(self.starting_capital * self.size_fraction, max(self.cash, 0.0))
+        # With a risk model, size is the inverse-volatility weight times the
+        # volatility-target scale. Without one, the flat fraction as before.
+        if self.risk is not None:
+            wanted = self.risk.notional_for(symbol, self.starting_capital)
+        else:
+            wanted = self.starting_capital * self.size_fraction
+        return min(wanted, max(self.cash, 0.0))
 
     def opened(self, symbol, cash_spent):
         """Record that a position was opened, and what it cost."""

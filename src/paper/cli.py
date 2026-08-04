@@ -41,6 +41,7 @@ from collector.store import StoreError
 from collector.timeframes import TimeframeError, timeframe_to_ms, to_utc_string
 from paper import state as state_module
 from paper.account import Account, AccountError
+from paper.risk import DrawdownGuard, RiskError, RiskModel, expected_shortfall
 from paper.portfolio import Portfolio, PortfolioError
 from signals import indicators, prices, rules
 from signals.trades import Costs
@@ -63,6 +64,7 @@ USER_ERRORS = (
     rules.RuleError,
     indicators.IndicatorError,
     AccountError,
+    RiskError,
     PortfolioError,
     state_module.StateError,
 )
@@ -84,6 +86,21 @@ DEFAULTS = {
     # its cleverness counts for anything, and it is the one comparison a
     # dashboard of your own equity curve cannot make for you.
     "benchmark": "BTC/USDT",
+    # The risk layer. All of it is off by default, so an existing ledger keeps
+    # its meaning and turning any of it on is a visible decision.
+    #
+    # sizing      "fixed" -- size_fraction of capital, as before
+    #             "inverse-vol" -- weight by 1/sigma, needing no correlations
+    #                              and no expected returns
+    # target_vol  annualised volatility to run the book at, or null for none
+    # max_leverage hard cap on the scale factor. This is the real risk decision:
+    #             set it from the drawdown that is survivable, not the return
+    #             that is wanted.
+    # max_drawdown pre-committed limit; new positions stop when it is breached
+    "sizing": "fixed",
+    "target_vol": None,
+    "max_leverage": 1.0,
+    "max_drawdown": None,
 }
 
 
@@ -173,12 +190,40 @@ def _load_frames(config, data_dir):
     return frames
 
 
+SIZINGS = ("fixed", "inverse-vol")
+
+
 def _build(config):
+    if config["sizing"] not in SIZINGS:
+        raise settings.ConfigError(
+            f"sizing must be one of {', '.join(SIZINGS)}, got {config['sizing']!r}"
+        )
+
+    step_ms = timeframe_to_ms(config["timeframe"])
+    bars_per_day = 86_400_000 / step_ms
+    bars_per_year = bars_per_day * 365
+
+    risk = None
+    if config["sizing"] == "inverse-vol" or config["target_vol"] is not None:
+        risk = RiskModel(
+            config["symbols"],
+            bars_per_year=bars_per_year,
+            bars_per_day=bars_per_day,
+            target_vol=config["target_vol"],
+            max_leverage=config["max_leverage"],
+        )
+
+    guard = None
+    if config["max_drawdown"] is not None:
+        guard = DrawdownGuard(limit=abs(float(config["max_drawdown"])))
+
     account = Account(
         config["starting_capital"],
         size_fraction=config["size_fraction"],
         max_positions=config["max_positions"],
         one_per_symbol=config["one_per_symbol"],
+        risk=risk,
+        guard=guard,
     )
     costs = Costs(fee=config["costs"]["fee"], slippage=config["costs"]["slippage"])
     return Portfolio(
@@ -189,6 +234,8 @@ def _build(config):
         trail=config["trail"],
         costs=costs,
         account=account,
+        risk=risk,
+        guard=guard,
     )
 
 
@@ -212,6 +259,18 @@ def _report(portfolio, frames, config, advanced):
         f"  closed      {len(ledger):>12d} trade(s)",
         f"  refused     {portfolio.rejections_total:>12d} signal(s) the wallet could not take",
     ]
+
+    if len(ledger):
+        shortfall = expected_shortfall(ledger["net_return"].tolist(), 0.95)
+        lines.append(f"  ES(95%)     {shortfall * 100:>11.2f}% average loss in the worst 5% of trades")
+
+    if portfolio.risk is not None:
+        lines.append(f"  risk        {portfolio.risk.describe()}")
+    if portfolio.guard is not None:
+        state = "TRIPPED -- no new positions" if portfolio.guard.tripped else "ok"
+        lines.append(
+            f"  drawdown    {portfolio.guard.drawdown:>11.1%} of a {portfolio.guard.limit:.0%} limit ({state})"
+        )
 
     if len(ledger):
         wins = (ledger["net_return"] > 0).mean()
@@ -407,6 +466,24 @@ def _snapshot(portfolio, frames, config):
             "refused": portfolio.rejections_total,
         },
         "risk": {
+            # Expected Shortfall over the realised trades: the average loss in
+            # the worst tail, not the threshold of it. Monitored rather than
+            # optimised -- optimising it needs a scenario set and a linear
+            # program, whereas monitoring it needs only what actually happened.
+            "expected_shortfall_95": (
+                None if not len(ledger)
+                else round(expected_shortfall(ledger["net_return"].tolist(), 0.95) * 100, 3)
+            ),
+            "sizing": config["sizing"],
+            "target_vol_pct": None if config["target_vol"] is None else round(config["target_vol"] * 100, 2),
+            "max_leverage": config["max_leverage"],
+            "scale": None if portfolio.risk is None else round(portfolio.risk.scale(), 3),
+            "forecast_vol_pct": (
+                None if portfolio.risk is None or portfolio.risk.portfolio_vol() is None
+                else round(portfolio.risk.portfolio_vol() * 100, 2)
+            ),
+            "drawdown_limit_pct": None if portfolio.guard is None else round(portfolio.guard.limit * 100, 1),
+            "drawdown_tripped": None if portfolio.guard is None else portfolio.guard.tripped,
             "peak": round(peak, 2),
             "max_drawdown_pct": round(max_drawdown * 100, 2),
             "current_drawdown_pct": round((running / peak - 1) * 100, 2) if peak else 0.0,

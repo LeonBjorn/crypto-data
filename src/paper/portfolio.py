@@ -51,7 +51,7 @@ class Portfolio:
     """One account, one book per symbol, advanced together through time."""
 
     def __init__(self, symbols, *, hold, stop=None, target=None, trail=None,
-                 costs: Costs, account: Account):
+                 costs: Costs, account: Account, risk=None, guard=None):
         if not symbols:
             raise PortfolioError("a portfolio needs at least one symbol")
 
@@ -62,6 +62,10 @@ class Portfolio:
         self.trail = trail
         self.costs = costs
         self.account = account
+        # Held here as well as on the account: the account consults them when
+        # sizing, this walks them forward in time.
+        self.risk = risk if risk is not None else getattr(account, "risk", None)
+        self.guard = guard if guard is not None else getattr(account, "guard", None)
 
         self.books = {
             symbol: PaperBook(
@@ -125,6 +129,26 @@ class Portfolio:
                     ),
                     signal=bool(signals[symbol].iloc[index]),
                 )
+            # Volatility and the drawdown limit are updated *after* the bar has
+            # been traded, never before. A position opened at this bar's open
+            # could only have been sized on information available before this
+            # bar closed -- folding this close in first would size today's trade
+            # on today's outcome, which is the same lookahead the guard in
+            # signals/ exists to catch, one layer down.
+            if self.risk is not None:
+                for symbol in self.symbols:
+                    index = positions.get(symbol, {}).get(stamp)
+                    if index is not None:
+                        self.risk.observe_close(symbol, float(frames[symbol]["close"].iloc[index]))
+
+            if self.guard is not None:
+                marked = 0.0
+                for symbol, book in self.books.items():
+                    index = positions.get(symbol, {}).get(stamp)
+                    if book.positions and index is not None:
+                        marked += book.marks(float(frames[symbol]["close"].iloc[index]))
+                self.guard.observe(self.account.cash + marked)
+
             self.cursor = stamp
             acted += 1
 
@@ -192,6 +216,13 @@ class Portfolio:
             ],
             "ledger": self.ledger().to_dict(orient="records"),
             "rejections_total": self.rejections_total,
+            "guard": None if self.guard is None else {
+                "limit": self.guard.limit,
+                "peak": self.guard.peak,
+                "equity": self.guard.equity,
+                "tripped": self.guard.tripped,
+                "tripped_at": self.guard.tripped_at,
+            },
             "rejections_recent": self.rejection_feed(),
         }
 
@@ -214,6 +245,15 @@ class Portfolio:
         self._rejections_before = int(state.get("rejections_total", 0))
         self.rejections_total = self._rejections_before
         self.recent_rejections = list(state.get("rejections_recent", []))
+
+        saved_guard = state.get("guard")
+        if self.guard is not None and saved_guard:
+            # The peak has to survive a restart or the limit silently resets to
+            # wherever the account happens to be when the process comes back.
+            self.guard.peak = float(saved_guard.get("peak", 0.0))
+            self.guard.equity = float(saved_guard.get("equity", 0.0))
+            self.guard.tripped = bool(saved_guard.get("tripped", False))
+            self.guard.tripped_at = saved_guard.get("tripped_at")
 
         indices = {
             symbol: {int(stamp): index for index, stamp in enumerate(frame["timestamp"])}
