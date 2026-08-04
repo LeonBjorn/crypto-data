@@ -311,3 +311,67 @@ class TestClosingIsReduceOnly:
         venue = FakeVenue()
         broker(client=venue, dry_run=False).market("BTC/USDT", BUY, 0.01, 100.0, 0)
         assert not venue.sent[0]["params"].get("reduceOnly")
+
+
+class TestCredentialsFromTheEnvironment:
+    """Whitespace in an environment variable is the easiest mistake here.
+
+    A trailing newline on the address produces a 422 from the venue reading
+    "failed to deserialize the JSON body", which names neither the field nor the
+    whitespace, and surfaces six frames down a traceback that ends in this
+    module refusing to trade. It cost a real debugging session; it is stripped
+    and validated now.
+    """
+
+    KEY = "0x" + "b" * 64
+    ADDRESS = "0x" + "a" * 40
+
+    def _env(self, monkeypatch, address):
+        monkeypatch.setenv(ADDRESS_ENV, address)
+        monkeypatch.setenv(KEY_ENV, self.KEY)
+
+    @pytest.mark.parametrize("suffix", ["", "\n", " ", "\t", "\r\n"])
+    def test_surrounding_whitespace_is_stripped(self, monkeypatch, suffix):
+        self._env(monkeypatch, self.ADDRESS + suffix)
+        broker = HyperliquidBroker(dry_run=False, network="testnet")
+        assert broker._client.walletAddress == self.ADDRESS
+
+    def test_the_key_is_stripped_too(self, monkeypatch):
+        """A newline on the key breaks signing rather than deserialisation, so
+        it fails later and even less legibly.
+        """
+        monkeypatch.setenv(ADDRESS_ENV, self.ADDRESS)
+        monkeypatch.setenv(KEY_ENV, self.KEY + "\n")
+        broker = HyperliquidBroker(dry_run=False, network="testnet")
+        assert broker._client.privateKey == self.KEY
+
+    @pytest.mark.parametrize("bad", [
+        "a" * 40,                      # no 0x
+        "0x" + "a" * 39,               # too short
+        "0x" + "a" * 41,               # too long
+        "0x" + "z" * 40,               # not hex
+        "not-an-address",
+    ])
+    def test_a_malformed_address_is_refused_before_any_call(self, monkeypatch, bad):
+        self._env(monkeypatch, bad)
+        with pytest.raises(LiveTradingRefused, match="well-formed address"):
+            HyperliquidBroker(dry_run=False, network="testnet")
+
+    def test_the_refusal_says_what_to_look_for(self, monkeypatch):
+        self._env(monkeypatch, "0xdeadbeef")
+        with pytest.raises(LiveTradingRefused, match="space or newline"):
+            HyperliquidBroker(dry_run=False, network="testnet")
+
+
+class TestAnUnreadableExposureExplainsItself:
+    def test_the_venues_own_error_is_carried_in_the_message(self):
+        """Not only chained. The reason sat six frames down a traceback ending
+        in this refusal, which reads as the guard being the fault.
+        """
+        class Broken(FakeVenue):
+            def fetch_positions(self):
+                raise RuntimeError("422 Unprocessable Entity")
+
+        b = broker(client=Broken(), dry_run=False)
+        with pytest.raises(LiveTradingRefused, match="422 Unprocessable Entity"):
+            b.market("BTC/USDT", BUY, 0.01, 100.0, 0)

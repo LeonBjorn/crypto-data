@@ -49,6 +49,26 @@ only one that sends anything, is opt-in, and is testnet-only.
    that matters: an API wallet can place orders and **cannot withdraw**. Do not
    put your master key in an environment variable, ever.
 
+### Setting them without leaving a copy anywhere
+
+`read -rs` keeps the key off the screen and out of shell history:
+
+```
+read -rs HYPERLIQUID_PRIVATE_KEY && export HYPERLIQUID_PRIVATE_KEY
+export HYPERLIQUID_WALLET_ADDRESS=0xYourAccountAddress
+```
+
+**Watch for trailing whitespace.** A newline or space on the address makes the
+venue answer every read with `422 Unprocessable Entity: failed to deserialize
+the JSON body`, which names neither the field nor the whitespace, and surfaces
+six frames down a traceback ending in this project refusing to trade. Both
+values are stripped and the address is format-checked before any call, so this
+now fails immediately and says what to look for -- but it is worth knowing why
+that check exists.
+
+Note also that the address should be your **account** address, and the key an
+**API/agent wallet** key for that account. They are not the same thing.
+
 3. Export the credentials in the shell that will run it — not in a file in this
    repository, and not in your shell profile if the machine is shared:
 

@@ -63,6 +63,7 @@ was written this way months before there was anything behind it.
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -80,6 +81,11 @@ __all__ = [
 # created by anyone with a shell, from anywhere, without this process
 # cooperating -- which is the property you want at the moment you want it.
 DEFAULT_KILL_SWITCH = "state/STOP"
+
+# An Ethereum-style address: 0x and forty hex digits, lower or mixed case. The
+# venue rejects anything else with a 422 that names neither the field nor the
+# reason, so it is worth checking here where the message can say which.
+ADDRESS_PATTERN = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 MAINNET_ENV = "HYPERLIQUID_ALLOW_MAINNET"
 ADDRESS_ENV = "HYPERLIQUID_WALLET_ADDRESS"
@@ -153,8 +159,20 @@ class HyperliquidBroker:
         """A ccxt client, in sandbox mode unless mainnet was demanded twice."""
         import ccxt
 
-        address = os.environ.get(ADDRESS_ENV)
-        key = os.environ.get(KEY_ENV)
+        # Stripped before anything else. A variable set with a trailing newline
+        # or a copied-in space is the single easiest mistake to make here, and
+        # the venue's answer to it is a 422 reading "failed to deserialize the
+        # JSON body" from deep inside ccxt -- which names neither the field nor
+        # the whitespace. Diagnosed the hard way; refused clearly from now on.
+        address = (os.environ.get(ADDRESS_ENV) or "").strip()
+        key = (os.environ.get(KEY_ENV) or "").strip()
+        if address and not ADDRESS_PATTERN.match(address):
+            raise LiveTradingRefused(
+                f"{ADDRESS_ENV} is not a well-formed address: expected 0x "
+                f"followed by 40 hex characters, got {len(address)} characters "
+                f"starting {address[:6]!r}. Check for a stray space or newline "
+                f"-- the venue rejects those with an unhelpful 422."
+            )
         if not address or not key:
             if self.dry_run:
                 # A dry run with no credentials is a legitimate thing to want:
@@ -419,12 +437,18 @@ class HyperliquidBroker:
             for position in self._client.fetch_positions() or []:
                 total += abs(float(position.get("notional") or 0.0))
             return total
-        except Exception:
+        except Exception as failure:
             # A cap that cannot be evaluated must not be treated as satisfied.
+            # The cause is carried in the message as well as chained: the
+            # original version said only that the read failed, and the reason
+            # sat six frames down a traceback that ended in this refusal --
+            # which reads like the guard being the problem rather than reporting
+            # one.
             raise LiveTradingRefused(
-                "could not read current positions from the venue, so the "
-                "exposure cap cannot be checked. Refusing to trade blind."
-            )
+                f"could not read positions from the venue, so the exposure cap "
+                f"cannot be checked and no order will be sent. The venue said: "
+                f"{type(failure).__name__}: {str(failure)[-160:]}"
+            ) from failure
 
     def describe(self) -> str:
         return (
