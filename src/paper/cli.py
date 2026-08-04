@@ -173,6 +173,9 @@ def build_parser():
                         help="where the ledger and open positions live (default: %(default)s)")
     parser.add_argument("--reset", action="store_true",
                         help="discard the saved ledger and start a new one")
+    parser.add_argument("--i-know-this-destroys-the-forward-record", action="store_true",
+                        dest="confirm_reset",
+                        help="required alongside --reset once forward testing has begun")
     parser.add_argument("--status", action="store_true",
                         help="print the current position without advancing anything")
     parser.add_argument("--json", metavar="PATH",
@@ -618,6 +621,25 @@ def _measure(args):
     # only part that can validate anything. Without the mark the two are
     # indistinguishable in the ledger, and in three months nobody could tell
     # which trades meant something.
+    # --reset on an account that has begun forward testing throws away the only
+    # evidence the project has and restarts a three-month clock, silently. It is
+    # one reflexive command, it is irreversible, and state/ is not committed, so
+    # there is no copy to go back to. It now has to be said twice.
+    if args.reset and not args.confirm_reset:
+        existing = state_module.load(print_target) if print_target.exists() else None
+        began = (existing or {}).get("forward_from")
+        if began:
+            days = ((portfolio.cursor or began) - began) / 86_400_000
+            raise state_module.StateError(
+                f"--reset would discard a forward record that began "
+                f"{to_utc_string(began)} ({days:.1f} days) along with "
+                f"{len(existing.get('ledger') or [])} trade(s). That record is the "
+                f"only out-of-sample evidence this project has and it cannot be "
+                f"rebuilt -- a replay is not the same thing.\n"
+                f"If you are certain, pass --i-know-this-destroys-the-forward-record "
+                f"as well. Or copy {print_target} somewhere first."
+            )
+
     forward_from = (saved or {}).get("forward_from")
     if forward_from is None:
         forward_from = portfolio.cursor
