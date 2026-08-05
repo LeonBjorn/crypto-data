@@ -53,6 +53,7 @@ collector → signals → paper → (hyperliquid)
 - **`signals/`** — rules, indicators, fill model, benchmarks, causality guard. Reads the store, never writes.
 - **`paper/`** — online engine, one finite wallet, risk layer, dashboard. Reads the store.
 - **`paper/hyperliquid.py`** — the only code that can trade. Testnet + dry-run by default.
+- **`paper/live.py`** — drives the engine against a venue. Mostly refusals; see below.
 
 ### The invariants that hold it together
 
@@ -72,7 +73,14 @@ These are the things to check you haven't broken. Each is enforced by tests.
    timestamp cursor; running hourly and running once after three days produce
    identical ledgers.
 
-4. **Every write is atomic.** Store and state both write to `.tmp` then
+4. **A live runner never replays history.** `paper/live.py` must be *armed*
+   before it will act: arming records where the present is and trades nothing.
+   Without it, a fresh state and a full store would fire ~2,000 market orders at
+   today's prices for signals that fired months ago. It also refuses when the
+   venue disagrees about a position, and refuses to "catch up" more than a few
+   bars, because missed bars are history and their prices are gone.
+
+5. **Every write is atomic.** Store and state both write to `.tmp` then
    `os.replace`. A killed process leaves the old complete file or the new one.
 
 ### Conventions that will bite you if ignored
