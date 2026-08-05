@@ -87,6 +87,13 @@ DEFAULT_KILL_SWITCH = "state/STOP"
 # reason, so it is worth checking here where the message can say which.
 ADDRESS_PATTERN = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
+# A secp256k1 private key: 32 bytes, so 64 hex digits, with an optional 0x.
+# ccxt takes privateKey[-64:] and base16-decodes it, so anything shorter or
+# containing a non-hex character surfaces as "Non-base16 digit found" from
+# inside base64.b16decode -- which names neither the key nor its length, and
+# appears only at the moment an order is signed. Checked here instead.
+KEY_PATTERN = re.compile(r"^(0x)?[0-9a-fA-F]{64}$")
+
 # Said once per process. Every broker constructed in an unauthenticated run
 # repeated it, which turns a useful notice into something to scroll past.
 _warned_unauthenticated = False
@@ -170,6 +177,19 @@ class HyperliquidBroker:
         # the whitespace. Diagnosed the hard way; refused clearly from now on.
         address = (os.environ.get(ADDRESS_ENV) or "").strip()
         key = (os.environ.get(KEY_ENV) or "").strip()
+        if key and not KEY_PATTERN.match(key):
+            # The key itself is never logged, only its shape.
+            hexish = all(c in "0123456789abcdefABCDEF" for c in key.removeprefix("0x"))
+            raise LiveTradingRefused(
+                f"{KEY_ENV} is not a well-formed private key: expected 64 hex "
+                f"characters with an optional 0x prefix, got {len(key)} "
+                f"characters"
+                + ("" if hexish else " containing at least one non-hex character")
+                + ". A Hyperliquid API wallet key looks like 0x followed by 64 "
+                f"hex digits. Check it was copied whole, and that it is the "
+                f"agent wallet's private key rather than an address, an API "
+                f"name, or a seed phrase."
+            )
         if address and not ADDRESS_PATTERN.match(address):
             raise LiveTradingRefused(
                 f"{ADDRESS_ENV} is not a well-formed address: expected 0x "

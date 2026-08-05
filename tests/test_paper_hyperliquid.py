@@ -375,3 +375,54 @@ class TestAnUnreadableExposureExplainsItself:
         b = broker(client=Broken(), dry_run=False)
         with pytest.raises(LiveTradingRefused, match="422 Unprocessable Entity"):
             b.market("BTC/USDT", BUY, 0.01, 100.0, 0)
+
+
+class TestThePrivateKeyIsCheckedToo:
+    """The address check was added and the key was left unvalidated.
+
+    ccxt takes privateKey[-64:] and base16-decodes it, so a short or non-hex key
+    fails as "Non-base16 digit found" from inside base64 -- naming neither the
+    key nor its length, and only at the moment an order is signed. That is the
+    worst possible place to learn it: after every guard has passed and with a
+    live order in flight.
+    """
+
+    ADDRESS = "0x" + "a" * 40
+
+    def _env(self, monkeypatch, key):
+        monkeypatch.setenv(ADDRESS_ENV, self.ADDRESS)
+        monkeypatch.setenv(KEY_ENV, key)
+
+    @pytest.mark.parametrize("key", ["0x" + "b" * 64, "b" * 64, "0X" + "B" * 64])
+    def test_a_well_formed_key_is_accepted(self, monkeypatch, key):
+        self._env(monkeypatch, key)
+        assert HyperliquidBroker(dry_run=False, network="testnet")
+
+    @pytest.mark.parametrize("key,why", [
+        ("0x" + "b" * 63, "one digit short"),
+        ("0x" + "b" * 65, "one digit long"),
+        ("0x" + "b" * 63 + "z", "not hex"),
+        ("word " * 12, "a seed phrase"),
+        ("0x" + "a" * 40, "an address by mistake"),
+        ("", "empty"),
+    ])
+    def test_a_malformed_key_is_refused_before_signing(self, monkeypatch, key, why):
+        self._env(monkeypatch, key)
+        with pytest.raises(LiveTradingRefused):
+            HyperliquidBroker(dry_run=False, network="testnet")
+
+    def test_the_refusal_never_contains_the_key(self, monkeypatch):
+        """The one error message in this project that must not be helpful by
+        quoting its input.
+        """
+        secret = "0x" + "d" * 60 + "zzzz"
+        self._env(monkeypatch, secret)
+        with pytest.raises(LiveTradingRefused) as caught:
+            HyperliquidBroker(dry_run=False, network="testnet")
+        assert secret not in str(caught.value)
+        assert "d" * 20 not in str(caught.value)
+
+    def test_it_says_the_length_so_a_truncated_paste_is_obvious(self, monkeypatch):
+        self._env(monkeypatch, "0x" + "b" * 40)
+        with pytest.raises(LiveTradingRefused, match="got 42 characters"):
+            HyperliquidBroker(dry_run=False, network="testnet")
