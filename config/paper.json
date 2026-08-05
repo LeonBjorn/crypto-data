@@ -29,5 +29,9 @@
   },
   "benchmark": "basket",
   "_risk": "Drawdown limit enabled 2026-08-04, forward-only. The account was already 41% below its realised peak when this was switched on, so applying it to the whole record would have tripped it in April 2025 and retired the account rather than protecting it. The high-water mark therefore starts from the equity on the day it was enabled. That is a real choice and not a neutral one: it forgives a drawdown that genuinely happened, and the 399 trades before this point were taken with no limit at all.",
-  "max_drawdown": 0.25
+  "max_drawdown": 0.25,
+  "_risk_settings": "Stated explicitly even where they match the defaults. These four decide how much is traded and when to stop, they are what the risk fingerprint is built from, and a safety setting that is only visible by reading cli.py is one nobody will check.",
+  "sizing": "fixed",
+  "target_vol": null,
+  "max_leverage": 1.0
 }

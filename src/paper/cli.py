@@ -181,6 +181,10 @@ def build_parser():
                         help="print the current position without advancing anything")
     parser.add_argument("--json", metavar="PATH",
                         help="also write the dashboard snapshot here (default: beside --state)")
+    parser.add_argument("--backup-dir", metavar="DIR",
+                        help="where to keep ledger copies (default: beside --state). "
+                             "Point this at a synced folder to get a copy off this disk -- "
+                             "the local ones do not survive losing it")
     return parser
 
 
@@ -690,7 +694,7 @@ def _measure_locked(args, config, print_target):
         payload["config"] = config
         # Copied aside before the save, so the copy is of the last state known
         # to be complete rather than of one written half a second ago.
-        backup_module.keep(print_target)
+        backup_module.keep(print_target, directory=args.backup_dir)
         state_module.save(print_target, payload)
         beat = backup_module.write_heartbeat(print_target.parent, cycle=advanced)
         if beat.get("gap_hours") and beat["gap_hours"] > 2:

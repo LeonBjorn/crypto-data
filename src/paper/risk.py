@@ -67,7 +67,6 @@ __all__ = [
 # `lambda_for`, because 0.94 means "remember about a month" only if a step is a
 # day; applied unchanged to hourly bars it would mean about a day and a half.
 DEFAULT_LAMBDA = 0.94
-DAILY_BARS_ASSUMED = 1
 
 # Below this many observations an EWMA estimate is mostly its own seed. Sizing on
 # it would be sizing on nothing, so the model says so and callers fall back to

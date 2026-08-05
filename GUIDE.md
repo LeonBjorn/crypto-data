@@ -179,8 +179,11 @@ measures *the rule*. A real wallet cannot do that:
 | one position per symbol | yes |
 
 **Signals the wallet cannot afford are recorded as refusals, not silence.** This
-matters more than it sounds: the account has taken 399 trades and **refused
-1,621** — roughly four refusals for every fill. A page that only counted fills
+matters more than it sounds: the account refuses roughly four signals for every
+one it fills. A page that only counted fills would make a constrained account
+look like a quiet market. The live figures are on the dashboard; they are not
+repeated here, because a number written into prose is a number that goes stale
+quietly. A page that only counted fills
 would make a constrained account look like a quiet market.
 
 ### Other rules in the registry
