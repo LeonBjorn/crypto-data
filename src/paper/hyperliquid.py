@@ -134,6 +134,7 @@ class HyperliquidBroker:
         max_total_exposure=500.0,
         kill_switch=DEFAULT_KILL_SWITCH,
         symbol_map=None,
+        assumed_fee=0.00045,
         client=None,
     ):
         if network not in ("testnet", "mainnet"):
@@ -159,6 +160,11 @@ class HyperliquidBroker:
         # listings the first time one is needed. Explicit exists so a test, or
         # an operator who disagrees with the resolution, can pin it.
         self.symbol_map = dict(symbol_map or {})
+        # Charged when the venue reports no fee at all. The taker rate the rest
+        # of the project assumes, so a live ledger and a paper one stay
+        # comparable rather than diverging in the flattering direction.
+        self.assumed_fee = float(assumed_fee)
+        self.unreported_fees = 0
         self._markets = None
         self.orders = []
 
@@ -408,11 +414,28 @@ class HyperliquidBroker:
             )
 
         average = float(average)
-        fee_cost = float((order.get("fee") or {}).get("cost") or 0.0)
+
+        # An absent fee is not a fee of zero. The venue does not always populate
+        # it -- testnet reported none for a real fill -- and treating silence as
+        # free would make live results flatter every other number in this
+        # project, which charges 0.045% per side everywhere else. When the venue
+        # says nothing, the assumed cost is applied and the fact is logged, so a
+        # ledger can never quietly claim a trade was free.
+        reported = (order.get("fee") or {}).get("cost")
+        if reported is None:
+            fee_cost = filled * average * self.assumed_fee
+            self.unreported_fees += 1
+            log.warning(
+                "%s: the venue reported no fee for this fill; charging the "
+                "assumed %.4f%% rather than treating it as free.",
+                symbol, self.assumed_fee * 100,
+            )
+        else:
+            fee_cost = float(reported)
 
         # Effective price is the average worsened by the fee actually charged, in
-        # the direction that hurts. Here it is measured rather than assumed,
-        # which is the whole difference from the paper broker.
+        # the direction that hurts. Measured where the venue says, assumed where
+        # it does not, and never optimistic.
         per_unit_fee = fee_cost / filled if filled else 0.0
         effective = average + per_unit_fee if side == BUY else average - per_unit_fee
 
@@ -442,12 +465,23 @@ class HyperliquidBroker:
         """
         if self._client is None or not self.authenticated:
             return {}
+        # Keyed the way the *caller* names symbols, not the way the venue does.
+        # Fills already come back as BTC/USDT while the venue reports
+        # BTC/USDC:USDC, so leaving these in venue naming would give
+        # reconciliation two dictionaries whose keys can never match -- and the
+        # failure would read as "the venue thinks we are flat", which is the
+        # most dangerous possible way to be wrong about a position.
+        backwards = {venue: store for store, venue in self.symbol_map.items()}
         held = {}
         for position in self._client.fetch_positions() or []:
             amount = float(position.get("contracts") or 0.0)
-            if amount:
-                side = position.get("side")
-                held[position["symbol"]] = -amount if side == "short" else amount
+            if not amount:
+                continue
+            venue_symbol = position["symbol"]
+            side = position.get("side")
+            held[backwards.get(venue_symbol, venue_symbol)] = (
+                -amount if side == "short" else amount
+            )
         return held
 
     def balances(self) -> dict:

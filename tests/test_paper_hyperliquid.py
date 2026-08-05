@@ -426,3 +426,77 @@ class TestThePrivateKeyIsCheckedToo:
         self._env(monkeypatch, "0x" + "b" * 40)
         with pytest.raises(LiveTradingRefused, match="got 42 characters"):
             HyperliquidBroker(dry_run=False, network="testnet")
+
+
+class TestWhatTheFirstRealFillTaught:
+    """Two defects that only a live order could have surfaced.
+
+    Both were invisible against a fake venue, because a fake returns whatever it
+    was told to. It took one $15 testnet trade to find them.
+    """
+
+    def test_positions_are_keyed_the_way_the_caller_names_symbols(self):
+        """The venue reports BTC/USDC:USDC and fills come back as BTC/USDT.
+
+        Left in venue naming, reconciliation compares two dictionaries whose
+        keys can never match -- and the symptom is "the venue thinks we are
+        flat", which is the most dangerous way to be wrong about a position.
+        """
+        venue = FakeVenue(positions=[
+            {"symbol": "BTC/USDC:USDC", "contracts": 0.5, "side": "long", "notional": 50.0},
+        ])
+        b = broker(client=venue)
+        b.resolve("BTC/USDT")                     # populates the mapping
+        assert b.positions() == {"BTC/USDT": pytest.approx(0.5)}
+
+    def test_an_unmapped_venue_symbol_is_passed_through_rather_than_dropped(self):
+        """A position opened by hand, or under an older config. Reporting it
+        under the venue's name is worse than nothing only if it vanishes.
+        """
+        venue = FakeVenue(positions=[
+            {"symbol": "DOGE/USDC:USDC", "contracts": 3.0, "side": "long", "notional": 1.0},
+        ])
+        assert broker(client=venue).positions() == {"DOGE/USDC:USDC": pytest.approx(3.0)}
+
+    def test_an_absent_fee_is_charged_at_the_assumed_rate_not_treated_as_free(self):
+        """Testnet reported no fee for a genuine fill. Silence is not zero, and
+        a live ledger claiming free trades would flatter every paper number.
+        """
+        class NoFee(FakeVenue):
+            def create_order(self, symbol, type, side, amount, price=None, params=None, **kw):
+                order = super().create_order(symbol, type, side, amount, price, params, **kw)
+                order["fee"] = None
+                return order
+
+        b = broker(client=NoFee(), dry_run=False, assumed_fee=0.00045)
+        fill = b.market("BTC/USDT", BUY, 1.0, 100.0, 0)
+        assert fill.fee > 0
+        assert fill.effective_price > fill.price
+        assert b.unreported_fees == 1
+
+    def test_a_fee_the_venue_does_report_is_used_as_given(self):
+        fill = broker(client=FakeVenue(fee=0.25), dry_run=False).market(
+            "BTC/USDT", BUY, 1.0, 100.0, 0)
+        assert fill.fee == pytest.approx(0.25)
+
+    def test_an_explicit_zero_fee_is_respected(self):
+        """Distinct from silence. A venue that genuinely charges nothing should
+        not be second-guessed.
+        """
+        class FreeVenue(FakeVenue):
+            def create_order(self, symbol, type, side, amount, price=None, params=None, **kw):
+                order = super().create_order(symbol, type, side, amount, price, params, **kw)
+                order["fee"] = {"cost": 0.0}
+                return order
+
+        b = broker(client=FreeVenue(), dry_run=False)
+        assert b.market("BTC/USDT", BUY, 1.0, 100.0, 0).fee == 0.0
+        assert b.unreported_fees == 0
+
+    def test_a_partial_fill_is_taken_at_face_value(self):
+        """The live order requested 0.000232 and filled 0.000230. Code that
+        assumed the request would believe it held 0.9% more than it does.
+        """
+        fill = broker(client=FakeVenue(filled=0.000230), dry_run=False).market(
+            "BTC/USDT", BUY, 0.000232, 64647.0, 0)
+        assert fill.qty == pytest.approx(0.000230)
