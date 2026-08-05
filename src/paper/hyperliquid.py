@@ -92,7 +92,12 @@ ADDRESS_PATTERN = re.compile(r"^0x[0-9a-fA-F]{40}$")
 # containing a non-hex character surfaces as "Non-base16 digit found" from
 # inside base64.b16decode -- which names neither the key nor its length, and
 # appears only at the moment an order is signed. Checked here instead.
-KEY_PATTERN = re.compile(r"^(0x)?[0-9a-fA-F]{64}$")
+# The prefix is case-insensitive here, unlike the address. ccxt takes
+# privateKey[-64:] before decoding, so the prefix never reaches the venue and an
+# uppercase 0X is harmless -- whereas the venue itself rejects an uppercase 0X in
+# an address. Two different rules because they are two different code paths, and
+# refusing a key that would have worked is its own kind of wrong.
+KEY_PATTERN = re.compile(r"^(0[xX])?[0-9a-fA-F]{64}$")
 
 # Said once per process. Every broker constructed in an unauthenticated run
 # repeated it, which turns a useful notice into something to scroll past.
